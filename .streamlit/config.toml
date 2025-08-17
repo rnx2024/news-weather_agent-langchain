@@ -1,0 +1,16 @@
+# .streamlit/config.toml
+
+[theme]
+primaryColor="#4A90E2"         # Modern blue accent
+backgroundColor="#0E1117"      # Dark sleek background
+secondaryBackgroundColor="#262730"  # Card / widget background
+textColor="#FAFAFA"            # Clean white text
+font="sans serif"              # Sleek modern font
+
+[server]
+headless = true
+enableCORS = false
+port = 8501
+
+[client]
+toolbarMode = "minimal"        # Hide extra UI clutter
