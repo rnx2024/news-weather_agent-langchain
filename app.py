@@ -7,6 +7,18 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 
 st.set_page_config(page_title="Weather + News", page_icon="🛰")
+st.markdown(
+    """
+    <style>
+    .block-container {
+        max-width: 800px;
+        margin: auto;
+        padding-top: 1rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 # --- Secrets ---
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
