@@ -1,6 +1,6 @@
 ### 🛰 Weather + News App
 
-A simple Streamlit app that uses:
+This app uses:
 - OpenWeather API for current weather
 - SerpAPI (Google News) for recent headlines
 - LangChain + OpenAI to combine results into a natural language summary
