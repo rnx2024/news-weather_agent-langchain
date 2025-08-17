@@ -1,0 +1,8 @@
+streamlit
+requests
+langchain
+langchain-core
+langchain-opena
+pydantic
+pydantic-core
+typing-extensions
