@@ -1,6 +1,4 @@
-# app_geo_weather.py
-import os, requests, re
-from dotenv import load_dotenv
+import requests, re
 import streamlit as st
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_tool_calling_agent, AgentExecutor
@@ -9,7 +7,6 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 
 st.set_page_config(page_title="Geo → Weather + News", page_icon="🛰")
-load_dotenv("secret_key")
 
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 OPENWEATHER_API_KEY = st.secrets["OPENWEATHER_API_KEY"]
@@ -55,7 +52,6 @@ def weather_by_coords(lat: float, lon: float) -> str:
 @tool
 def news_by_place(place: str) -> str:
     """Latest headlines via SERPAPI Google News. Input: place string."""
-    q = _clean_place(place)
     r = requests.get(
         "https://serpapi.com/search.json",
         params={"engine": "google_news", "q": q, "hl": "en", "gl": "ph", "api_key": SERPAPI_API_KEY},
