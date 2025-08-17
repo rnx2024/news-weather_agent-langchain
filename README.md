@@ -38,14 +38,17 @@ cd news-weather_agent-langchain
 
 2. Add API keys
 Create a file secret_key.txt and input your API Keys.
-
+```
 OPENAI_API_KEY = "your-openai-api-key"
 OPENWEATHER_API_KEY = "your-openweather-api-key"
 SERPAPI_API_KEY = "your-serpapi-api-key"
-
+```
 You can get your free API keys from OpenWeather and SERPAPI here: 
 - [OpenWeather](https://openweathermap.org/)
 - [SerpAPI](https://serpapi.com/)
+
+You can also buy OpenAI API credits here: 
+- [OpenAI API](https://platform.openai.com/)
 
 3. You can add or remove from the listed locations based on your preferences.
 ```
