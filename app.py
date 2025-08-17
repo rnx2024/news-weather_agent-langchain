@@ -8,7 +8,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 st.set_page_config(page_title="Weather + News", page_icon="🛰")
 
-# --- Secrets (Streamlit) ---
+# --- Secrets ---
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 OPENWEATHER_API_KEY = st.secrets["OPENWEATHER_API_KEY"]
 SERPAPI_API_KEY = st.secrets["SERPAPI_API_KEY"]
@@ -16,7 +16,7 @@ SERPAPI_API_KEY = st.secrets["SERPAPI_API_KEY"]
 # --- LLM ---
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=OPENAI_API_KEY)
 
-# --- Tools (no geocoding) ---
+# --- Tools ---
 @tool
 def weather_by_place(place: str) -> str:
     """Current weather using OpenWeather by place name."""
