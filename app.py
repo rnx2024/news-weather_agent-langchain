@@ -11,37 +11,32 @@ from langchain_core.messages import HumanMessage, AIMessage
 st.set_page_config(page_title="Geo → Weather + News", page_icon="🛰")
 load_dotenv("secret_key")
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
-SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
+OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+OPENWEATHER_API_KEY = st.secrets["OPENWEATHER_API_KEY"]
+SERPAPI_API_KEY = st.secrets["SERPAPI_API_KEY"]
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=OPENAI_API_KEY)
-
-# --- helpers ---
-def _clean_place(text: str) -> str:
-    t = re.sub(r"^(what('?s| is)\s+)?(the\s+)?weather\s+in\s+", "", text, flags=re.I)
-    return t.strip(" ?.,:")
 
 # --- tools ---
 @tool
 def geocode_place(place: str) -> dict:
     """Return coordinates via OpenWeather Geocoding. Input: place string."""
-    q = _clean_place(place)
     r = requests.get(
         "https://api.openweathermap.org/geo/1.0/direct",
-        params={"q": q, "limit": 1, "appid": OPENWEATHER_API_KEY},
+        params={"q": place, "limit": 1, "appid": OPENWEATHER_API_KEY},
         timeout=15,
     )
     arr = r.json() if r.status_code == 200 else []
     if not arr:
-        return {"error": f"no geocode match for '{q}'", "query": q}
+        return {"error": f"no geocode match for '{place}'", "query": place}
     top = arr[0]
     return {
         "lat": float(top["lat"]),
         "lon": float(top["lon"]),
-        "name": top.get("name", q),
+        "name": top.get("name", place),
         "country": top.get("country", "")
     }
+
 
 @tool
 def weather_by_coords(lat: float, lon: float) -> str:
