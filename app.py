@@ -97,7 +97,7 @@ LOCATIONS = [
 ]
 loc = st.selectbox("Choose location", LOCATIONS, index=0)
 
-if st.button("Get Update"):
+if st.button("Get Updates"):
     st.session_state.history.append(HumanMessage(content=loc))
     out = executor.invoke({"input": loc, "chat_history": st.session_state.history})
     ans = out["output"]
