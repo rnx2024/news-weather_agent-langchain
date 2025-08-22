@@ -99,8 +99,8 @@ def summarize(place: str, weather_line: str, headlines: List[Dict]) -> str:
 st.title("🛰 Weather + News")
 
 LOCATIONS = [
-    "Ilocos Sur", "Vigan City", "Laoag City", "La Union", "Dagupan City",
-    "Manila", "Cebu City", "Davao City", "Baguio", "Texas", "India"
+    "Vigan City", "Laoag City", "Candon City", "San Fernando City, La Union", "Dagupan City", "Lingayen",
+    "Manila", "Cebu City", "Davao City", "Baguio City", "Texas", "India"
 ]
 
 col1, col2 = st.columns([2,1])
