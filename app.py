@@ -107,7 +107,7 @@ col1, col2 = st.columns([2,1])
 with col1:
     loc = st.selectbox("Choose location", LOCATIONS, index=0)
 with col2:
-    do_summary = st.toggle("LLM summary", value=True)
+    do_summary = st.toggle("Summarize Updates", value=True)
 
 if st.button("Get Updates", type="primary"):
     loc_sanitized = (loc or "").strip()
