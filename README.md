@@ -18,7 +18,7 @@ This app uses:
 ```
 pip install -r requirements.txt
 ```
-
+```
 streamlit
 requests
 langchain
@@ -27,7 +27,7 @@ langchain-openai
 pydantic
 pydantic-core
 typing-extensions
-
+```
 ### Setup
 
 1. Clone this repo
