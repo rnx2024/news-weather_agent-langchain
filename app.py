@@ -17,7 +17,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ---- Secrets (fail-fast, but with user-friendly message) ----
+# ---- Secrets ----
 def _require_secret(name: str) -> str:
     val = st.secrets.get(name)
     if not val:
@@ -29,7 +29,7 @@ OPENAI_API_KEY     = _require_secret("OPENAI_API_KEY")
 OPENWEATHER_API_KEY = _require_secret("OPENWEATHER_API_KEY")
 SERPAPI_API_KEY     = _require_secret("SERPAPI_API_KEY")
 
-# ---- HTTP helper with retry/backoff ----
+# ---- HTTP helper with retry ----
 def _get_json_with_retry(url: str, params: Dict, tries: int = 2, timeout: int = 15) -> Tuple[Dict, str]:
     """
     Returns (json, error). On success: (dict, ""). On failure: ({}, message).
@@ -80,7 +80,7 @@ def get_news(place: str) -> Tuple[List[Dict], str]:
         })
     return (results, "")
 
-# ---- Optional LLM summary (deterministic) ----
+# ---- News+ Weather Summary ----
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=OPENAI_API_KEY)
 
 def summarize(place: str, weather_line: str, headlines: List[Dict]) -> str:
@@ -96,7 +96,7 @@ def summarize(place: str, weather_line: str, headlines: List[Dict]) -> str:
     return llm.invoke(prompt).content
 
 # ---- UI ----
-st.title("🛰 Weather + News")
+st.title("🛰 Weather + News Briefs")
 
 LOCATIONS = [
     "Vigan City", "Laoag City", "Candon City", "San Fernando City, La Union", "Dagupan City", "Lingayen",
