@@ -99,7 +99,7 @@ def summarize(place: str, weather_line: str, headlines: List[Dict]) -> str:
 st.title("🛰 Weather + News Briefs")
 
 LOCATIONS = [
-    "Vigan City", "Laoag City", "Candon City", "San Fernando City, La Union", "Dagupan City", "Lingayen",
+    "Vigan City", "Laoag City", "Candon City", "San Fernando City, La Union", "Dagupan City", "Lingayen City",
     "Manila", "Cebu City", "Davao City", "Baguio City", "Texas", "India"
 ]
 
@@ -144,4 +144,4 @@ if st.button("Get Updates", type="primary"):
             st.write(summarize(loc_sanitized, weather_line, headlines))
         except Exception as e:
             st.info("Summary unavailable.")
-            # Optionally log e on server side
+         
