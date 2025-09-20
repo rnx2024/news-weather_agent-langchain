@@ -1,52 +1,42 @@
 from __future__ import annotations
-from typing import Dict, Any
-from langchain.tools import tool
+from typing import Dict, Any, List
 from langchain_openai import ChatOpenAI
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from settings import OPENAI_API_KEY
 from weather_service import get_weather_line
 from news_service import get_news_items
-from settings import OPENAI_API_KEY
 
-@tool("get_weather")
-def get_weather_tool(place: str) -> str:
-    """Return concise weather line for a place."""
-    line, err = get_weather_line(place)
-    return line if not err else f"ERROR: {err}"
+_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=OPENAI_API_KEY)
+_parser = StrOutputParser()
 
-@tool("get_news")
-def get_news_tool(place: str) -> str:
-    """Return top headlines for a place as bullets with source/date/link."""
-    items, err = get_news_items(place)
-    if err:
-        return f"ERROR: {err}"
-    if not items:
-        return "No recent news."
-    return "\n".join(f"- {h['title']} ({h['source']}, {h['date']}) -> {h['link']}" for h in items)
-
-# Prompt must include {tools}, {input}, and MessagesPlaceholder("agent_scratchpad")
-_PROMPT = ChatPromptTemplate.from_messages([
-    ("system",
-     "You are a precise news+weather assistant.\n"
-     "You can use these tools:\n{tools}\n"
-     "Fetch weather and top headlines for the place and return ONE plain-text paragraph. "
-     "If a tool errors, note it briefly and continue."),
-    ("human", "Place: {input}"),
-    MessagesPlaceholder("agent_scratchpad"),
-])
-
-_EXECUTOR: AgentExecutor | None = None
-
-def _build_agent() -> AgentExecutor:
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=OPENAI_API_KEY)
-    tools = [get_weather_tool, get_news_tool]
-    agent = create_react_agent(llm, tools, _PROMPT)
-    return AgentExecutor(agent=agent, tools=tools, verbose=False)
+_prompt = PromptTemplate.from_template(
+    "Summarize as ONE concise paragraph, plain text.\n"
+    "Location: {place}\n"
+    "Weather: {weather_line}\n"
+    "News:\n{headlines}\n"
+    "{notes}"
+)
 
 def run_agent(place: str) -> Dict[str, Any]:
-    global _EXECUTOR
-    if _EXECUTOR is None:
-        _EXECUTOR = _build_agent()
-    res = _EXECUTOR.invoke({"input": place})
-    final = res["output"] if isinstance(res, dict) and "output" in res else str(res)
+    weather_line, w_err = get_weather_line(place)
+    headlines, n_err = get_news_items(place)
+
+    head_txt = "\n".join(
+        f"- {h['title']} ({h['source']}, {h['date']}) -> {h['link']}"
+        for h in (headlines or [])
+    ) or "No recent news."
+
+    errs: List[str] = []
+    if w_err: errs.append(f"Weather source failed: {w_err}")
+    if n_err: errs.append(f"News source failed: {n_err}")
+    notes = ("Notes: " + "; ".join(errs)) if errs else ""
+
+    chain = _prompt | _llm | _parser
+    final = chain.invoke({
+        "place": place,
+        "weather_line": weather_line or "n/a",
+        "headlines": head_txt,
+        "notes": notes
+    })
     return {"final": final}
