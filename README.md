@@ -1,87 +1,69 @@
-# 🛰 Weather + News Agent (Modularized)
+# Weather + News Intelligent Agent (FastAPI + LangGraph)
 
-This Streamlit app fetches **weather** and **news** for a city, then summarizes them using a **LangChain ReAct agent** powered by OpenAI.
+This project provides a production-ready FastAPI backend powered by a LangGraph ReAct agent.
+The agent integrates weather, news, and risk estimation into a single intelligent reasoning pipeline.
+
+A separate React frontend can call the `/chat` endpoint for conversational responses.
 
 ---
 
 ## Features
-- **Weather**: Uses OpenWeather API for current conditions.
-- **News**: Uses SerpAPI (Google News engine) for top 5 headlines.
-- **Agent Reasoning**: LangChain + OpenAI ReAct agent decides when to call tools (`get_weather`, `get_news`).
-- **Summary**: Produces a single-paragraph natural language brief.
-- **UI Options**:
-  - Toggle between *direct pipeline* and *agent reasoning*.
-  - Optional summary toggle.
+
+### 1. Hybrid Weather Intelligence
+
+Uses Open-Meteo for:
+- Daily forecast  
+- Hourly forecast  
+- Weather codes for thunderstorms, fog, extreme heat, wind, snow  
+
+Uses OpenWeather for:
+- One-line human-readable weather description (`weather_line`)
+
+Additional capabilities:
+- Automatic geocoding with fallback  
+- Hazard classification (heavy_rain, thunderstorm, extreme heat, etc.)
 
 ---
 
-## Modularized Code Layout
+### 2. Intelligent News Fetching (SerpAPI)
 
-app.py                   # Streamlit UI  
-agent_service.py         # LangChain ReAct agent with tools  
-http_utils.py            # Shared HTTP request + retry helper  
-llm_service.py           # LLM summarizer for direct pipeline  
-news_service.py          # SerpAPI news fetcher  
-weather_service.py       # OpenWeather fetcher  
-settings.py              # Secret key loader via st.secrets  
-requirements.txt         # Python dependencies  
-.streamlit/secrets.toml.example  # Example config for keys  
+- Uses Google News engine  
+- Filters headlines to the last 7 days only  
+- Returns the top 3 most recent headlines  
+- Supports global localization via dynamic country-code detection
 
 ---
 
-## Requirements
+### 3. LangGraph-Powered ReAct Agent
 
-Install dependencies:
+The agent:
+- Reasons step-by-step  
+- Decides when to call tools (`weather_tool`, `news_tool`, `city_risk_tool`)  
+- Produces a concise, final natural-language summary  
 
-pip install -r requirements.txt
-
-Main libraries:
-
-streamlit  
-requests  
-langchain  
-langchain-openai  
-openai  
+Debug mode exposes:
+- Tool calls  
+- Arguments  
+- Observations  
 
 ---
 
-## Setup
+### 4. Built-in Tooling Infrastructure
 
-1. **Clone this repo**
-
-   git clone https://github.com/rnx2024/news-weather_agent-langchain.git  
-   cd news-weather_agent-langchain  
-
-2. **Add API keys**  
-   Create `.streamlit/secrets.toml` (not tracked by Git) with:
-
-   OPENAI_API_KEY = "your-openai-api-key"  
-   OPENWEATHER_API_KEY = "your-openweather-api-key"  
-   SERPAPI_API_KEY = "your-serpapi-api-key"  
-
-3. **(Optional) Change locations**  
-   In `app.py`:
-
-   LOCATIONS = ["Vigan City", "Laoag City", "Dagupan City", "Manila", "Cebu City", "Davao City"]
-
-4. **Run the app**
-
-   streamlit run app.py  
+- Token-bucket rate limiting  
+- Automatic retries with exponential backoff  
+- Structured tools using Pydantic schemas  
+- City risk assessment combining weather and real-time news patterns  
 
 ---
 
-## Usage
+### 5. Secure FastAPI Service
 
-Open the UI in your browser (default: http://localhost:8501).
+All endpoints require an API key via the `x-api-key` header.
 
-1. Select a location.  
-2. Click **Get Updates**.  
-3. Toggle between **direct summary** or **agent reasoning**.  
-4. Read weather, news headlines, and the AI-generated summary.  
-
+Available endpoints:
+- `GET /health` — service health check  
+- `POST /chat` — main LangGraph agent endpoint  
+- `GET /weather` — one-line weather summary  
+- `GET /news` — filtered news (≤7 days, top 3 headlines)  
 ---
-
-## Notes
-1. Weather results may vary if multiple cities share the same name.  
-2. Free SerpAPI has limited requests per day.  
-3. OpenAI API usage may incur costs depending on your plan.  
