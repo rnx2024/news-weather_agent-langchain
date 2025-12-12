@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
+from app.settings import settings
 from app.routes import router as api_router
 
 
@@ -14,16 +14,17 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
+allowed_origins = [origin.strip() for origin in settings.frontend_cors_origin.split(',')]
 # ---------------------------------------------------------
 # CORS CONFIGURATION
 # ---------------------------------------------------------
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],              # allow all origins (local + deployed)
-    allow_credentials=False,          # safer since you use x-api-key, not cookies
-    allow_methods=["*"],              # allow POST /chat
-    allow_headers=["*"],              # allow x-api-key, content-type…
+    allow_origins=allowed_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ---------------------------------------------------------

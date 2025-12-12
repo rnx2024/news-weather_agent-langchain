@@ -20,7 +20,8 @@ class Settings(BaseSettings):
     openmeteo_geocode_url: str = "https://geocoding-api.open-meteo.com/v1/search"
     openmeteo_forecast_url: str = "https://api.open-meteo.com/v1/forecast"
     serpapi_search_url: str = "https://serpapi.com/search.json"
-
+    frontend_cors_origin: str
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
