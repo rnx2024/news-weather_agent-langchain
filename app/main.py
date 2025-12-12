@@ -3,8 +3,12 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+
 from app.settings import settings
 from app.routes import router as api_router
+from app.ratelimit import limiter
 
 
 app = FastAPI(
@@ -13,6 +17,12 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+# ---------------------------
+# SlowAPI (rate limiting)
+# ---------------------------
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 allowed_origins = [origin.strip() for origin in settings.frontend_cors_origin.split(',')]
 # ---------------------------------------------------------

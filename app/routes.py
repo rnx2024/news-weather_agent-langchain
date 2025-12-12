@@ -3,8 +3,11 @@ from __future__ import annotations
 
 from typing import List, Dict, Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Header, Depends
+from fastapi import APIRouter, HTTPException, Query, Header, Depends, Request
 from pydantic import BaseModel
+
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.agent_service import run_agent
 from app.weather_service import get_weather_line
@@ -13,6 +16,11 @@ from app.news_service import get_news_items
 from app.settings import settings
 
 router = APIRouter()
+
+# -----------------------------------------------------------
+# Rate limiting (per-IP)
+# -----------------------------------------------------------
+limiter = Limiter(key_func=get_remote_address)
 
 # -----------------------------------------------------------
 # API KEY VALIDATION
@@ -43,18 +51,22 @@ class AgentResponse(BaseModel):
 # -----------------------------------------------------------
 
 @router.get("/health")
-async def health() -> Dict[str, str]:
+@limiter.limit("30/minute")
+async def health(request: Request) -> Dict[str, str]:
     return {"status": "ok"}
 
 
 @router.post("/chat", response_model=AgentResponse, tags=["agent"], dependencies=[Depends(require_api_key)])
-async def agent_endpoint(payload: AgentRequest) -> AgentResponse:
+@limiter.limit("5/minute")
+async def agent_endpoint(request: Request, payload: AgentRequest) -> AgentResponse:
     result = run_agent(payload.place, payload.question)
     return AgentResponse(**result)
 
 
 @router.get("/weather", tags=["weather"], dependencies=[Depends(require_api_key)])
+@limiter.limit("15/minute")
 async def weather_endpoint(
+    request: Request,
     place: str = Query(..., description="City or place name")
 ) -> Dict[str, str]:
     line, err = get_weather_line(place)
@@ -63,7 +75,9 @@ async def weather_endpoint(
     return {"place": place, "summary": line}
 
 @router.get("/news", tags=["news"], dependencies=[Depends(require_api_key)])
+@limiter.limit("6/minute")
 async def news_endpoint(
+    request: Request,
     place: str = Query(..., description="City or topic for news search")
 ) -> Dict[str, Any]:
     """
@@ -82,4 +96,3 @@ async def news_endpoint(
         "items": headlines,
         "note": "Showing only top 3 headlines from last 7 days",
     }
-
