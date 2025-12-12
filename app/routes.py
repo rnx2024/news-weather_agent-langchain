@@ -57,7 +57,7 @@ async def health(request: Request) -> Dict[str, str]:
 
 
 @router.post("/chat", response_model=AgentResponse, tags=["agent"], dependencies=[Depends(require_api_key)])
-@limiter.limit("5/minute")
+@limiter.limit("15/minute")
 async def agent_endpoint(request: Request, payload: AgentRequest) -> AgentResponse:
     result = run_agent(payload.place, payload.question)
     return AgentResponse(**result)
@@ -75,7 +75,7 @@ async def weather_endpoint(
     return {"place": place, "summary": line}
 
 @router.get("/news", tags=["news"], dependencies=[Depends(require_api_key)])
-@limiter.limit("6/minute")
+@limiter.limit("15/minute")
 async def news_endpoint(
     request: Request,
     place: str = Query(..., description="City or topic for news search")
