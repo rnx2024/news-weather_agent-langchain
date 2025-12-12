@@ -9,6 +9,7 @@ from langgraph.prebuilt import create_react_agent
 
 from app.settings import settings
 from app.agent_tools import weather_tool, news_tool, city_risk_tool
+from app.agent_prompts import LOCAL_INTELLIGENCE_SYSTEM_PROMPT
 
 
 # -----------------------------------------------------
@@ -33,9 +34,8 @@ tools = [weather_tool, news_tool, city_risk_tool]
 react_app = create_react_agent(
     model=_llm,
     tools=tools,
-    # You can pass prompt / state options here if needed; default ReAct prompt is used.
+    prompt=LOCAL_INTELLIGENCE_SYSTEM_PROMPT,
 )
-
 
 # -----------------------------------------------------
 # Helper: build user prompt string

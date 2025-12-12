@@ -118,8 +118,11 @@ def news_tool(place: str) -> str:
             raise RuntimeError(err)
         if not headlines:
             return "No recent news."
+
         return "\n".join(
-            f"- {h['title']} ({h['source']}, {h['date']}) -> {h['link']}"
+            f"- {h['title']} ({h['source']}, {h['date']})"
+            + (f" — {h['snippet'][:160].strip()}" if h.get("snippet") else "")
+            + (f" -> {h['link']}" if h.get("link") else "")
             for h in headlines
         )
 
@@ -127,7 +130,11 @@ def news_tool(place: str) -> str:
 
 
 @tool(args_schema=RiskInput)
-def city_risk_tool(place: str, horizon: str = "today", activity: Optional[str] = None) -> str:
+def city_risk_tool(
+    place: str,
+    horizon: str = "today",
+    activity: Optional[str] = None,
+) -> str:
     """
     Assess city risk level (LOW, MEDIUM, HIGH) for outdoor activity
     based on forecasted weather and recent local news.
@@ -145,6 +152,9 @@ def city_risk_tool(place: str, horizon: str = "today", activity: Optional[str] =
         risk_score = 0
         reasons = []
 
+        # -------------------------
+        # Weather-based risk
+        # -------------------------
         if summary:
             cur = summary["current"]
             day = summary["day"]
@@ -196,14 +206,35 @@ def city_risk_tool(place: str, horizon: str = "today", activity: Optional[str] =
                 risk_score += 2
                 reasons.append(f"very cold (down to {tmin}°C)")
 
-        titles = " ".join(h["title"] for h in (headlines or [])).lower()
-        if "flood" in titles or "landslide" in titles or "evacuation" in titles:
-            risk_score += 3
-            reasons.append("severe incident in news")
-        elif "protest" in titles or "strike" in titles or "closure" in titles:
-            risk_score += 2
-            reasons.append("disruption reported")
+        # -------------------------
+        # News-based risk (LOCAL ONLY)
+        # -------------------------
+        place_l = place.lower()
+        relevant_blobs = []
 
+        for h in headlines or []:
+            blob = (
+                (h.get("title") or "")
+                + " "
+                + (h.get("snippet") or "")
+            ).lower()
+
+            if place_l in blob:
+                relevant_blobs.append(blob)
+
+        titles = " ".join(relevant_blobs)
+
+        if titles:
+            if any(k in titles for k in ("flood", "landslide", "evacuation", "emergency")):
+                risk_score += 3
+                reasons.append("severe local incident reported")
+            elif any(k in titles for k in ("protest", "strike", "closure", "outage", "traffic")):
+                risk_score += 2
+                reasons.append("local disruption reported")
+
+        # -------------------------
+        # Final classification
+        # -------------------------
         if risk_score >= 5:
             level = "HIGH"
         elif risk_score >= 2:
@@ -216,6 +247,7 @@ def city_risk_tool(place: str, horizon: str = "today", activity: Optional[str] =
             msg += "Key factors: " + "; ".join(dict.fromkeys(reasons)) + "."
         if activity:
             msg += f" Activity: {activity}."
+
         return msg
 
     return retry(call)
