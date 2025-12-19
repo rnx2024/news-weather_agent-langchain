@@ -31,20 +31,12 @@ tools = [weather_tool, news_tool, city_risk_tool]
 _REACT_APP_CACHE: Dict[Tuple[bool, bool], Any] = {}
 
 def _get_react_app(include_weather: bool, include_news: bool):
-    """
-    Deterministically gate tools. Reuse the original global `react_app`
-    when both weather and news are allowed; otherwise return a cached,
-    minimally-gated agent.
-    """
-    if include_weather and include_news:
-        return react_app  # reuse your original agent (no duplication)
-
     key = (include_weather, include_news)
     app = _REACT_APP_CACHE.get(key)
     if app is not None:
         return app
 
-    gated = [city_risk_tool]
+    gated = [city_risk_tool]          # always available (forces grounding)
     if include_weather:
         gated.append(weather_tool)
     if include_news:
@@ -54,36 +46,22 @@ def _get_react_app(include_weather: bool, include_news: bool):
     _REACT_APP_CACHE[key] = app
     return app
 
-
 def _decide_includes(question: Optional[str]) -> Tuple[bool, bool]:
-    """
-    Minimal intent heuristic:
-    - If user explicitly mentions weather/news → enable that tool.
-    - If neither is mentioned → suppress both.
-    - question is None → enable both (initial brief).
-    """
     if not question:
         return True, True
 
     q = question.lower()
+    inc_w = any(t in q for t in (
+        "weather","forecast","temperature","rain","storm","wind","uv","heat","snow","fog","typhoon","hurricane"
+    ))
+    inc_n = any(t in q for t in (
+        "news","headline","headlines","update","updates",
+        "disruption","disruptions","incident","incidents",
+        "protest","strike","closure","closures","outage","traffic",
+        "where","location","locations","area","areas"
+    ))
+    return (inc_w, inc_n) if (inc_w or inc_n) else (False, False)
 
-    weather_terms = (
-        "weather", "forecast", "temperature", "rain", "storm", "wind", "uv",
-        "heat", "snow", "fog", "typhoon", "hurricane"
-    )
-    news_terms = (
-        "news", "headline", "headlines", "update", "updates",
-        "disruption", "disruptions", "incident", "incidents",
-        "protest", "strike", "closure", "closures", "outage", "traffic",
-        "where", "location", "locations", "area", "areas"
-    )
-
-    inc_w = any(t in q for t in weather_terms)
-    inc_n = any(t in q for t in news_terms)
-
-    if not inc_w and not inc_n:
-        return False, False
-    return inc_w, inc_n
 
 # -----------------------------------------------------
 # Build LangGraph ReAct agent
@@ -174,7 +152,9 @@ async def run_agent(
     # ADD these two hard requirements:
     policy_lines.extend([
         "- Always produce a one-paragraph risk recommendation for the specified location.",
-        "- If the user asks about disruptions or 'where' they are, you MUST ground your answer using recent news: either call news_tool (if allowed) or state 'no specific locations reported' when none are named.",
+        "- Use the city_risk_tool each turn to ground your answer on current weather/news signals.",
+        "- Do NOT include explicit weather/news text in the final paragraph unless the user asked for it or a new update is available.",
+        "- If the user asks about disruptions or 'where' they are, ground the answer using recent news: list up to 3 named places if present, otherwise say 'no specific locations reported'."
     ])
 
     user_prompt = "\n".join(policy_lines) + "\n\n---\n\n" + user_prompt
