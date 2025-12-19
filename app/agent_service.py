@@ -58,15 +58,29 @@ def _get_react_app(include_weather: bool, include_news: bool):
 def _decide_includes(question: Optional[str]) -> Tuple[bool, bool]:
     """
     Minimal intent heuristic:
-    - If user explicitly mentions weather/news → enable that tool
-    - If neither is mentioned → suppress both
-    Keeps your original behavior when question is None by enabling both.
+    - If user explicitly mentions weather/news → enable that tool.
+    - If neither is mentioned → suppress both.
+    - question is None → enable both (initial brief).
     """
     if not question:
         return True, True
+
     q = question.lower()
-    inc_w = any(k in q for k in ("weather", "forecast", "temperature", "rain", "storm", "wind", "uv"))
-    inc_n = any(k in q for k in ("news", "headline", "headlines", "update", "updates", "what's happening"))
+
+    weather_terms = (
+        "weather", "forecast", "temperature", "rain", "storm", "wind", "uv",
+        "heat", "snow", "fog", "typhoon", "hurricane"
+    )
+    news_terms = (
+        "news", "headline", "headlines", "update", "updates",
+        "disruption", "disruptions", "incident", "incidents",
+        "protest", "strike", "closure", "closures", "outage", "traffic",
+        "where", "location", "locations", "area", "areas"
+    )
+
+    inc_w = any(t in q for t in weather_terms)
+    inc_n = any(t in q for t in news_terms)
+
     if not inc_w and not inc_n:
         return False, False
     return inc_w, inc_n
@@ -156,10 +170,13 @@ async def run_agent(
         policy_lines.append("- Do NOT call weather_tool or include weather unless explicitly asked.")
     if not include_news:
         policy_lines.append("- Do NOT call news_tool or include news unless explicitly asked.")
+
+    # ADD these two hard requirements:
     policy_lines.extend([
         "- Always produce a one-paragraph risk recommendation for the specified location.",
-        "- If the user's wording is implicit (e.g., 'are you discouraging me to visit ...', 'should I go'), treat it as a request for a go/no-go recommendation and use the city_risk_tool to ground your answer.",
+        "- If the user asks about disruptions or 'where' they are, you MUST ground your answer using recent news: either call news_tool (if allowed) or state 'no specific locations reported' when none are named.",
     ])
+
     user_prompt = "\n".join(policy_lines) + "\n\n---\n\n" + user_prompt
 
 
