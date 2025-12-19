@@ -15,6 +15,7 @@ from app.agent_tools import city_risk_tool
 from app.news_service import get_news_items
 from app.settings import settings
 from app.session_auth import require_session, sign_session 
+from app.admin_clean import purge_by_patterns, should_purge
 
 router = APIRouter()
 
@@ -113,3 +114,16 @@ async def news_endpoint(
         "items": headlines,
         "note": "Showing only top 3 headlines from last 7 days",
     }
+
+@router.post("/admin/purge-cache", tags=["admin"], dependencies=[Depends(require_api_key)])
+@limiter.limit("1/minute")
+async def purge_cache(request: Request):
+    from app.admin_clean import purge_by_patterns
+    deleted = await purge_by_patterns()
+    return {"status": "ok", "deleted": deleted}
+
+@router.get("/admin/should-purge", tags=["admin"], dependencies=[Depends(require_api_key)])
+@limiter.limit("5/minute")
+async def get_should_purge(request: Request):
+    from app.admin_clean import should_purge
+    return {"should_purge": await should_purge()}
