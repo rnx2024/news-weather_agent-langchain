@@ -127,3 +127,9 @@ async def purge_cache(request: Request):
 async def get_should_purge(request: Request):
     from app.admin_clean import should_purge
     return {"should_purge": await should_purge()}
+
+@router.get("/admin/memory", tags=["admin"], dependencies=[Depends(require_api_key)])
+@limiter.limit("5/minute")
+async def admin_memory(request: Request, threshold_mb: int = Query(28)) -> Dict[str, Any]:
+    from app.admin_clean import memory_usage
+    return await memory_usage(threshold_mb)
