@@ -6,7 +6,7 @@ from typing import Callable, Any, Optional
 from pydantic import BaseModel
 from langchain_core.tools import tool
 from app.session_cache import get_last_exchange, mark_sent
-import redis as redis_sync
+import redis  # <-- UPDATED: force sync redis client (prevents "coroutine ... was never awaited")
 
 from app.weather_service import (
     get_weather_line,
@@ -20,10 +20,10 @@ from app.news_service import get_news_items
 # Global cache (Redis) for tools
 # -----------------------------
 CACHE_TTL_SECONDS = 3600
-_sync_redis: Optional[redis_sync.Redis] = None
+_sync_redis: Optional[redis.Redis] = None  # <-- UPDATED
 
 
-def _get_sync_redis() -> Optional[redis_sync.Redis]:
+def _get_sync_redis() -> Optional[redis.Redis]:  # <-- UPDATED
     """
     Sync Redis client for LangGraph sync tool calls.
     Uses REDIS_URL. Safe to return None if misconfigured.
@@ -37,7 +37,7 @@ def _get_sync_redis() -> Optional[redis_sync.Redis]:
         return None
 
     try:
-        _sync_redis = redis_sync.Redis.from_url(
+        _sync_redis = redis.Redis.from_url(  # <-- UPDATED
             url,
             decode_responses=True,
             socket_connect_timeout=5,
@@ -172,6 +172,107 @@ class RiskInput(BaseModel):
 
 
 # -----------------------------
+# Helpers to reduce cognitive complexity
+# -----------------------------
+def _score_weather_risk(summary: Any) -> tuple[int, list[str]]:
+    """Return (risk_score_delta, reasons) from weather summary. No side effects."""
+    if not summary:
+        return 0, []
+
+    risk_score = 0
+    reasons: list[str] = []
+
+    cur = summary["current"]
+    day = summary["day"]
+
+    code = cur.get("weather_code")
+    cat = classify_weather_code(code)
+
+    cat_score: dict[str, tuple[int, str]] = {
+        "thunderstorm": (3, "thunderstorms expected"),
+        "heavy_rain": (2, "heavy rain expected"),
+        "rain": (1, "rain likely"),
+        "snow": (2, "snow or icy conditions"),
+        "fog": (1, "fog reducing visibility"),
+    }
+    if cat in cat_score:
+        s, r = cat_score[cat]
+        risk_score += s
+        reasons.append(r)
+
+    wind_max = day.get("wind_speed_max_kmh") or 0
+    if wind_max >= 70:
+        risk_score += 3
+        reasons.append(f"very strong winds (~{wind_max} km/h)")
+    elif wind_max >= 50:
+        risk_score += 2
+        reasons.append(f"strong winds (~{wind_max} km/h)")
+    elif wind_max >= 30:
+        risk_score += 1
+        reasons.append(f"gusty winds (~{wind_max} km/h)")
+
+    precip = day.get("precip_mm") or 0
+    if precip >= 30:
+        risk_score += 2
+        reasons.append(f"heavy precipitation (~{precip} mm)")
+    elif precip >= 5:
+        risk_score += 1
+        reasons.append(f"rainfall (~{precip} mm)")
+
+    tmax = day.get("tmax_c")
+    tmin = day.get("tmin_c")
+    if tmax is not None and tmax >= 35:
+        risk_score += 2
+        reasons.append(f"very hot (up to {tmax}°C)")
+    if tmin is not None and tmin <= -5:
+        risk_score += 2
+        reasons.append(f"very cold (down to {tmin}°C)")
+
+    return risk_score, reasons
+
+
+def _score_news_risk(place: str, headlines: Any) -> tuple[int, list[str]]:
+    """Return (risk_score_delta, reasons) from local news signals. No side effects."""
+    if not headlines:
+        return 0, []
+
+    risk_score = 0
+    reasons: list[str] = []
+
+    place_l = (place or "").lower()
+    relevant_blobs: list[str] = []
+
+    for h in headlines or []:
+        blob = ((h.get("title") or "") + " " + (h.get("snippet") or "")).lower()
+        if place_l in blob:
+            relevant_blobs.append(blob)
+
+    titles = " ".join(relevant_blobs)
+    if not titles:
+        return 0, []
+
+    severe = ("flood", "landslide", "evacuation", "emergency")
+    disruption = ("protest", "strike", "closure", "outage", "traffic")
+
+    if any(k in titles for k in severe):
+        risk_score += 3
+        reasons.append("severe local incident reported")
+    elif any(k in titles for k in disruption):
+        risk_score += 2
+        reasons.append("local disruption reported")
+
+    return risk_score, reasons
+
+
+def _classify_risk_level(score: int) -> str:
+    if score >= 5:
+        return "HIGH"
+    if score >= 2:
+        return "MEDIUM"
+    return "LOW"
+
+
+# -----------------------------
 # Tools
 # -----------------------------
 @tool(args_schema=WeatherInput)
@@ -238,124 +339,58 @@ def city_risk_tool(
     Assess city risk level (LOW, MEDIUM, HIGH) for outdoor activity and also consider travel conditions
     based on forecasted weather and recent local news.
     """
-    # Cache upstream data used by risk tool (not the risk result itself)
-    # so risk reasoning still runs but does not repeatedly hit external APIs.
+
     w_key = f"cache:tool:weather_summary:{_norm(place)}:{_norm(horizon)}"
     n_key = f"cache:tool:news_items:{_norm(place)}"
 
-    weather_rate.acquire()
-    news_rate.acquire()
+    def _get_or_fetch_weather() -> Any:
+        cached = _cache_get_json(w_key)
+        if cached is not None:
+            return cached
 
-    def call():
-        summary = _cache_get_json(w_key)
-        headlines = _cache_get_json(n_key)
+        summary, werr = get_weather_summary(place, horizon)
+        if werr and not summary:
+            raise RuntimeError(werr)
+        _cache_set_json(w_key, summary, ttl=CACHE_TTL_SECONDS)
+        return summary
 
-        if summary is None:
-            summary, werr = get_weather_summary(place, horizon)
-            if werr and not summary:
-                raise RuntimeError(werr)
-            _cache_set_json(w_key, summary, ttl=CACHE_TTL_SECONDS)
+    def _get_or_fetch_news() -> Any:
+        cached = _cache_get_json(n_key)
+        if cached is not None:
+            return cached
 
-        if headlines is None:
-            headlines, nerr = get_news_items(place)
-            # if error, keep behavior consistent with prior code:
-            # headlines can be None/[]; we only use it for local disruption signals.
-            _cache_set_json(n_key, headlines or [], ttl=CACHE_TTL_SECONDS)
+        headlines, _nerr = get_news_items(place)
+        # keep prior behavior: cache [] even on error/None
+        _cache_set_json(n_key, headlines or [], ttl=CACHE_TTL_SECONDS)
+        return headlines or []
 
-        risk_score = 0
-        reasons = []
-
-        # -------------------------
-        # Weather-based risk
-        # -------------------------
-        if summary:
-            cur = summary["current"]
-            day = summary["day"]
-
-            code = cur.get("weather_code")
-            cat = classify_weather_code(code)
-
-            if cat == "thunderstorm":
-                risk_score += 3
-                reasons.append("thunderstorms expected")
-            elif cat == "heavy_rain":
-                risk_score += 2
-                reasons.append("heavy rain expected")
-            elif cat == "rain":
-                risk_score += 1
-                reasons.append("rain likely")
-            elif cat == "snow":
-                risk_score += 2
-                reasons.append("snow or icy conditions")
-            elif cat == "fog":
-                risk_score += 1
-                reasons.append("fog reducing visibility")
-
-            wind_max = day.get("wind_speed_max_kmh") or 0
-            if wind_max >= 70:
-                risk_score += 3
-                reasons.append(f"very strong winds (~{wind_max} km/h)")
-            elif wind_max >= 50:
-                risk_score += 2
-                reasons.append(f"strong winds (~{wind_max} km/h)")
-            elif wind_max >= 30:
-                risk_score += 1
-                reasons.append(f"gusty winds (~{wind_max} km/h)")
-
-            precip = day.get("precip_mm") or 0
-            if precip >= 30:
-                risk_score += 2
-                reasons.append(f"heavy precipitation (~{precip} mm)")
-            elif precip >= 5:
-                risk_score += 1
-                reasons.append(f"rainfall (~{precip} mm)")
-
-            tmax = day.get("tmax_c")
-            tmin = day.get("tmin_c")
-            if tmax is not None and tmax >= 35:
-                risk_score += 2
-                reasons.append(f"very hot (up to {tmax}°C)")
-            if tmin is not None and tmin <= -5:
-                risk_score += 2
-                reasons.append(f"very cold (down to {tmin}°C)")
-
-        # -------------------------
-        # News-based risk (LOCAL ONLY)
-        # -------------------------
-        place_l = place.lower()
-        relevant_blobs = []
-
-        for h in headlines or []:
-            blob = ((h.get("title") or "") + " " + (h.get("snippet") or "")).lower()
-            if place_l in blob:
-                relevant_blobs.append(blob)
-
-        titles = " ".join(relevant_blobs)
-
-        if titles:
-            if any(k in titles for k in ("flood", "landslide", "evacuation", "emergency")):
-                risk_score += 3
-                reasons.append("severe local incident reported")
-            elif any(k in titles for k in ("protest", "strike", "closure", "outage", "traffic")):
-                risk_score += 2
-                reasons.append("local disruption reported")
-
-        # -------------------------
-        # Final classification
-        # -------------------------
-        if risk_score >= 5:
-            level = "HIGH"
-        elif risk_score >= 2:
-            level = "MEDIUM"
-        else:
-            level = "LOW"
-
+    def _build_message(level: str, reasons: list[str]) -> str:
         msg = f"Risk level: {level}. "
         if reasons:
             msg += "Key factors: " + "; ".join(dict.fromkeys(reasons)) + "."
         if activity:
             msg += f" Activity: {activity}."
-
         return msg
+
+    def call() -> str:
+        weather_rate.acquire()
+        news_rate.acquire()
+
+        summary = _get_or_fetch_weather()
+        headlines = _get_or_fetch_news()
+
+        risk_score = 0
+        reasons: list[str] = []
+
+        w_score, w_reasons = _score_weather_risk(summary)
+        risk_score += w_score
+        reasons.extend(w_reasons)
+
+        n_score, n_reasons = _score_news_risk(place, headlines)
+        risk_score += n_score
+        reasons.extend(n_reasons)
+
+        level = _classify_risk_level(risk_score)
+        return _build_message(level, reasons)
 
     return retry(call)

@@ -26,14 +26,14 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 allowed_origins = [origin.strip() for origin in settings.frontend_cors_origin.split(',')]
+
 # ---------------------------------------------------------
 # CORS CONFIGURATION
 # ---------------------------------------------------------
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=False,
+    allow_credentials=True,  # <-- UPDATED: required if session auth uses cookies/Authorization
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -42,18 +42,22 @@ app.add_middleware(
 # Mount API routes AFTER adding CORS
 # ---------------------------------------------------------
 app.include_router(api_router)
+
+
 @app.on_event("startup")
 async def _startup():
     await init_redis()
+
 
 @app.on_event("shutdown")
 async def _shutdown():
     await close_redis()
 
+
 @app.get("/", tags=["meta"])
 async def root():
     return {
-        "name": "News & Weather Agent API",
+        "name": "SmartNews API",
         "status": "ok",
         "docs": "/docs",
     }
