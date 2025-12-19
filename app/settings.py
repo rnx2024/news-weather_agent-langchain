@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     openmeteo_forecast_url: str = "https://api.open-meteo.com/v1/forecast"
     serpapi_search_url: str = "https://serpapi.com/search.json"
     frontend_cors_origin: str
+
+    # Database / cache
+    redis_url: str
+    session_secret: str
     
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -9,6 +9,7 @@ from slowapi.errors import RateLimitExceeded
 from app.settings import settings
 from app.routes import router as api_router
 from app.ratelimit import limiter
+from app.redis_client import init_redis, close_redis
 
 
 app = FastAPI(
@@ -41,7 +42,13 @@ app.add_middleware(
 # Mount API routes AFTER adding CORS
 # ---------------------------------------------------------
 app.include_router(api_router)
+@app.on_event("startup")
+async def _startup():
+    await init_redis()
 
+@app.on_event("shutdown")
+async def _shutdown():
+    await close_redis()
 
 @app.get("/", tags=["meta"])
 async def root():

@@ -1,10 +1,12 @@
 # app/agent_tools.py
 from __future__ import annotations
 
-import time
+import os, json, time
 from typing import Callable, Any, Optional
 from pydantic import BaseModel
 from langchain_core.tools import tool
+from app.session_cache import get_last_exchange, mark_sent
+import redis as redis_sync
 
 from app.weather_service import (
     get_weather_line,
@@ -12,6 +14,85 @@ from app.weather_service import (
     classify_weather_code,
 )
 from app.news_service import get_news_items
+
+
+# -----------------------------
+# Global cache (Redis) for tools
+# -----------------------------
+CACHE_TTL_SECONDS = 3600
+_sync_redis: Optional[redis_sync.Redis] = None
+
+
+def _get_sync_redis() -> Optional[redis_sync.Redis]:
+    """
+    Sync Redis client for LangGraph sync tool calls.
+    Uses REDIS_URL. Safe to return None if misconfigured.
+    """
+    global _sync_redis
+    if _sync_redis is not None:
+        return _sync_redis
+
+    url = os.environ.get("REDIS_URL")
+    if not url:
+        return None
+
+    try:
+        _sync_redis = redis_sync.Redis.from_url(
+            url,
+            decode_responses=True,
+            socket_connect_timeout=5,
+            socket_timeout=5,
+            health_check_interval=30,
+        )
+        # Fail fast at init time (but still non-fatal)
+        _sync_redis.ping()
+        return _sync_redis
+    except Exception:
+        _sync_redis = None
+        return None
+
+
+def _norm(s: str) -> str:
+    return (s or "").strip().lower()
+
+
+def _cache_get_str(key: str) -> Optional[str]:
+    r = _get_sync_redis()
+    if r is None:
+        return None
+    try:
+        v = r.get(key)
+        return v if v is not None else None
+    except Exception:
+        return None
+
+
+def _cache_set_str(key: str, value: str, ttl: int = CACHE_TTL_SECONDS) -> None:
+    r = _get_sync_redis()
+    if r is None:
+        return
+    try:
+        r.set(key, value, ex=ttl)
+    except Exception:
+        return
+
+
+def _cache_get_json(key: str) -> Optional[Any]:
+    raw = _cache_get_str(key)
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def _cache_set_json(key: str, obj: Any, ttl: int = CACHE_TTL_SECONDS) -> None:
+    try:
+        raw = json.dumps(obj, ensure_ascii=False)
+    except Exception:
+        return
+    _cache_set_str(key, raw, ttl=ttl)
 
 
 # -----------------------------
@@ -96,6 +177,12 @@ class RiskInput(BaseModel):
 @tool(args_schema=WeatherInput)
 def weather_tool(place: str, horizon: Optional[str] = "today") -> str:
     """Get a concise weather summary for a specific place and time horizon."""
+    # Cache key includes horizon for safety (even if get_weather_line ignores it today).
+    cache_key = f"cache:tool:weather_line:{_norm(place)}:{_norm(horizon or 'today')}"
+    cached = _cache_get_str(cache_key)
+    if cached is not None:
+        return cached
+
     weather_rate.acquire()
 
     def call():
@@ -104,12 +191,21 @@ def weather_tool(place: str, horizon: Optional[str] = "today") -> str:
             raise RuntimeError(err)
         return line or "No weather data."
 
-    return retry(call)
+    out = retry(call)
+    # Cache even "No weather data." to reduce repeated calls
+    if isinstance(out, str):
+        _cache_set_str(cache_key, out, ttl=CACHE_TTL_SECONDS)
+    return out
 
 
 @tool(args_schema=NewsInput)
 def news_tool(place: str) -> str:
     """Fetch recent news headlines for a specific city or region."""
+    cache_key = f"cache:tool:news_lines:{_norm(place)}"
+    cached = _cache_get_str(cache_key)
+    if cached is not None:
+        return cached
+
     news_rate.acquire()
 
     def call():
@@ -126,7 +222,10 @@ def news_tool(place: str) -> str:
             for h in headlines
         )
 
-    return retry(call)
+    out = retry(call)
+    if isinstance(out, str):
+        _cache_set_str(cache_key, out, ttl=CACHE_TTL_SECONDS)
+    return out
 
 
 @tool(args_schema=RiskInput)
@@ -136,18 +235,32 @@ def city_risk_tool(
     activity: Optional[str] = None,
 ) -> str:
     """
-    Assess city risk level (LOW, MEDIUM, HIGH) for outdoor activity
+    Assess city risk level (LOW, MEDIUM, HIGH) for outdoor activity and also consider travel conditions
     based on forecasted weather and recent local news.
     """
+    # Cache upstream data used by risk tool (not the risk result itself)
+    # so risk reasoning still runs but does not repeatedly hit external APIs.
+    w_key = f"cache:tool:weather_summary:{_norm(place)}:{_norm(horizon)}"
+    n_key = f"cache:tool:news_items:{_norm(place)}"
+
     weather_rate.acquire()
     news_rate.acquire()
 
     def call():
-        summary, werr = get_weather_summary(place, horizon)
-        headlines, nerr = get_news_items(place)
+        summary = _cache_get_json(w_key)
+        headlines = _cache_get_json(n_key)
 
-        if werr and not summary:
-            raise RuntimeError(werr)
+        if summary is None:
+            summary, werr = get_weather_summary(place, horizon)
+            if werr and not summary:
+                raise RuntimeError(werr)
+            _cache_set_json(w_key, summary, ttl=CACHE_TTL_SECONDS)
+
+        if headlines is None:
+            headlines, nerr = get_news_items(place)
+            # if error, keep behavior consistent with prior code:
+            # headlines can be None/[]; we only use it for local disruption signals.
+            _cache_set_json(n_key, headlines or [], ttl=CACHE_TTL_SECONDS)
 
         risk_score = 0
         reasons = []
@@ -213,12 +326,7 @@ def city_risk_tool(
         relevant_blobs = []
 
         for h in headlines or []:
-            blob = (
-                (h.get("title") or "")
-                + " "
-                + (h.get("snippet") or "")
-            ).lower()
-
+            blob = ((h.get("title") or "") + " " + (h.get("snippet") or "")).lower()
             if place_l in blob:
                 relevant_blobs.append(blob)
 

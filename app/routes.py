@@ -14,6 +14,7 @@ from app.weather_service import get_weather_line
 from app.agent_tools import city_risk_tool
 from app.news_service import get_news_items
 from app.settings import settings
+from app.session_auth import require_session, sign_session 
 
 router = APIRouter()
 
@@ -55,11 +56,27 @@ class AgentResponse(BaseModel):
 async def health(request: Request) -> Dict[str, str]:
     return {"status": "ok"}
 
+@router.post("/session", tags=["session"], dependencies=[Depends(require_api_key)])
+@limiter.limit("30/minute")
+async def create_session(request: Request) -> Dict[str, str]:
+    from uuid import uuid4
+    session_id = str(uuid4())
+    session_token = sign_session(session_id)
+    return {"session_id": session_id, "session_token": session_token}
+
 
 @router.post("/chat", response_model=AgentResponse, tags=["agent"], dependencies=[Depends(require_api_key)])
 @limiter.limit("15/minute")
-async def agent_endpoint(request: Request, payload: AgentRequest) -> AgentResponse:
-    result = run_agent(payload.place, payload.question)
+async def agent_endpoint(
+    request: Request,
+    payload: AgentRequest,
+    session_id: str = Depends(require_session),  # <-- ADD THIS
+) -> AgentResponse:
+    result = await run_agent(                     # <-- AWAIT and pass session_id
+        session_id=session_id,
+        place=payload.place,
+        question=payload.question,
+    )
     return AgentResponse(**result)
 
 
