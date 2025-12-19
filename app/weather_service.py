@@ -31,7 +31,8 @@ def get_weather_line(place: str) -> Tuple[str, str]:
     """
     data, err = get_weather_raw(place)
     if err:
-        return ("", f"Weather error for '{place}': {err}")
+        # Do not include user-controlled data in returned error strings
+        return ("", f"Weather error: {err}")
 
     name = data.get("name") or place
     wx = (data.get("weather") or [{}])[0]
@@ -77,6 +78,13 @@ WEATHER_CODE_DESCRIPTIONS = {
     99: "Thunderstorm with heavy hail",
 }
 
+_THUNDERSTORM_CODES = {95, 96, 99}
+_HEAVY_RAIN_CODES = {82, 65, 67, 75, 86}
+_RAIN_CODES = {51, 53, 55, 56, 57, 61, 63, 66, 71, 73, 77, 80, 81, 85}
+_SNOW_CODES = {71, 73, 75, 77, 85, 86}
+_FOG_CODES = {45, 48}
+_CLEAR_OR_CLOUDY_CODES = {0, 1, 2, 3}
+
 
 def weather_code_to_text(code: Optional[int]) -> str:
     return WEATHER_CODE_DESCRIPTIONS.get(code, "Unknown conditions")
@@ -85,20 +93,18 @@ def weather_code_to_text(code: Optional[int]) -> str:
 def classify_weather_code(code: Optional[int]) -> str:
     if code is None:
         return "unknown"
-
-    if code in (95, 96, 99):
+    if code in _THUNDERSTORM_CODES:
         return "thunderstorm"
-    if code in (82, 65, 67, 75, 86):
+    if code in _HEAVY_RAIN_CODES:
         return "heavy_rain"
-    if code in (51, 53, 55, 56, 57, 61, 63, 66, 71, 73, 77, 80, 81, 85):
+    if code in _RAIN_CODES:
         return "rain"
-    if code in (71, 73, 75, 77, 85, 86):
+    if code in _SNOW_CODES:
         return "snow"
-    if code in (45, 48):
+    if code in _FOG_CODES:
         return "fog"
-    if code in (0, 1, 2, 3):
+    if code in _CLEAR_OR_CLOUDY_CODES:
         return "clear_or_cloudy"
-
     return "unknown"
 
 
@@ -113,7 +119,8 @@ def geocode_place(place: str, language: str = "en"):
         data = r.json() or {}
         results = data.get("results") or []
         if not results:
-            return None, f"No geocoding results for '{place}'"
+            # Do not include user-controlled data in returned error strings
+            return None, "No geocoding results."
 
         loc = results[0]
         return {
@@ -205,8 +212,6 @@ def get_weather_summary(place: str, horizon: str = "today", language: str = "en"
             "tmax_c": _pick_daily_value(daily, "temperature_2m_max", idx),
             "precip_mm": _pick_daily_value(daily, "precipitation_sum", idx),
             "uv_index_max": _pick_daily_value(daily, "uv_index_max", idx),
-            "wind_speed_max_kmh": _pick_daily_value(
-                daily, "wind_speed_10m_max", idx
-            ),
+            "wind_speed_max_kmh": _pick_daily_value(daily, "wind_speed_10m_max", idx),
         },
     }, None

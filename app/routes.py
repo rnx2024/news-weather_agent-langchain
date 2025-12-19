@@ -1,7 +1,7 @@
 # routes.py
 from __future__ import annotations
 
-from typing import Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, Header, Depends, Request
 from pydantic import BaseModel
@@ -14,7 +14,9 @@ from app.weather_service import get_weather_line
 from app.news_service import get_news_items
 from app.settings import settings
 from app.session_auth import require_session, sign_session
-from app.session_cache import get_last_exchange, should_include, mark_sent
+
+# NEW: session cache helpers used by /chat
+from app.session_cache import should_include, get_last_exchange, mark_sent
 
 
 router = APIRouter()
@@ -45,6 +47,81 @@ class AgentRequest(BaseModel):
 
 class AgentResponse(BaseModel):
     final: str
+
+
+# -----------------------------------------------------------
+# Helpers (to reduce cognitive complexity in /chat)
+# -----------------------------------------------------------
+def _detect_explicit_asks(question: str) -> Tuple[bool, bool]:
+    text_lc = (question or "").lower()
+    return ("weather" in text_lc, "news" in text_lc)
+
+
+def _build_context_lines(last_user: Optional[str], last_reply: Optional[str]) -> List[str]:
+    lines: List[str] = []
+    if last_user or last_reply:
+        lines.append("Previous exchange (most recent):")
+        if last_user:
+            lines.append(f"- User: {last_user}")
+        if last_reply:
+            lines.append(f"- Assistant: {last_reply}")
+    return lines
+
+
+def _build_suppression_lines(
+    force_weather: bool,
+    force_news: bool,
+    include_weather: bool,
+    include_news: bool,
+) -> List[str]:
+    lines: List[str] = []
+    if force_weather and not include_weather:
+        lines.append(
+            "Session policy: Weather was already provided recently. Do not repeat weather details; "
+            "say it was recently provided and offer to refresh after some time."
+        )
+    if force_news and not include_news:
+        lines.append(
+            "Session policy: News was already provided recently. Do not repeat news details; "
+            "say it was recently provided and offer to refresh after some time."
+        )
+    return lines
+
+
+def _augment_question(question: str, context_lines: List[str], suppression_lines: List[str]) -> str:
+    if not context_lines and not suppression_lines:
+        return question
+
+    parts: List[str] = []
+    if context_lines:
+        parts.append("\n".join(context_lines))
+    if suppression_lines:
+        parts.append("\n".join(suppression_lines))
+    parts.append(question)
+    return "\n\n".join(parts)
+
+
+async def _persist_session_state(
+    *,
+    session_id: str,
+    question: str,
+    final_text: str,
+    force_weather: bool,
+    force_news: bool,
+    include_weather: bool,
+    include_news: bool,
+) -> None:
+    try:
+        await mark_sent(
+            session_id,
+            weather_sent=bool(force_weather and include_weather),
+            news_sent=bool(force_news and include_news),
+            user_message=question,
+            agent_reply=final_text,
+        )
+    except Exception:
+        # fail-open: chat response should not fail because Redis write failed
+        return
 
 
 # -----------------------------------------------------------
@@ -80,47 +157,21 @@ async def agent_endpoint(
     - Saves the latest exchange + sent timestamps back to Redis.
     """
     question = payload.question or ""
-    text_lc = question.lower()
 
-    # "Explicit ask" detection used by session_cache policy
-    force_weather = "weather" in text_lc
-    force_news = "news" in text_lc
-
-    # Policy: allow explicit asks; otherwise allow only if last sent >= 1 hour ago
+    force_weather, force_news = _detect_explicit_asks(question)
     include_weather, include_news = await should_include(session_id, force_weather, force_news)
 
-    # Load 1-turn memory and inject as context (no tool signature changes)
     last_user, last_reply = await get_last_exchange(session_id)
+    context_lines = _build_context_lines(last_user, last_reply)
 
-    context_lines: list[str] = []
-    if last_user or last_reply:
-        context_lines.append("Previous exchange (most recent):")
-        if last_user:
-            context_lines.append(f"- User: {last_user}")
-        if last_reply:
-            context_lines.append(f"- Assistant: {last_reply}")
+    suppression_lines = _build_suppression_lines(
+        force_weather=force_weather,
+        force_news=force_news,
+        include_weather=include_weather,
+        include_news=include_news,
+    )
 
-    # If user explicitly asks but policy suppresses (asked again within 1 hour),
-    # instruct the agent to avoid repeating and instead reference that it was recently provided.
-    suppression_lines: list[str] = []
-    if force_weather and not include_weather:
-        suppression_lines.append(
-            "Session policy: Weather was already provided recently. Do not repeat weather details; "
-            "say it was recently provided and offer to refresh after some time."
-        )
-    if force_news and not include_news:
-        suppression_lines.append(
-            "Session policy: News was already provided recently. Do not repeat news details; "
-            "say it was recently provided and offer to refresh after some time."
-        )
-
-    augmented_question = question
-    if context_lines or suppression_lines:
-        augmented_question = (
-            (("\n".join(context_lines) + "\n\n") if context_lines else "")
-            + (("\n".join(suppression_lines) + "\n\n") if suppression_lines else "")
-            + question
-        )
+    augmented_question = _augment_question(question, context_lines, suppression_lines)
 
     result = await run_agent(
         session_id=session_id,
@@ -128,19 +179,15 @@ async def agent_endpoint(
         question=augmented_question,
     )
 
-    # Save session state (timestamps only when user explicitly asked AND policy allowed)
-    # This keeps should_include() consistent without requiring run_agent/tool introspection yet.
-    try:
-        await mark_sent(
-            session_id,
-            weather_sent=bool(force_weather and include_weather),
-            news_sent=bool(force_news and include_news),
-            user_message=question,
-            agent_reply=result.get("final"),
-        )
-    except Exception:
-        # fail-open: chat response should not fail because Redis write failed
-        pass
+    await _persist_session_state(
+        session_id=session_id,
+        question=question,
+        final_text=str(result.get("final") or ""),
+        force_weather=force_weather,
+        force_news=force_news,
+        include_weather=include_weather,
+        include_news=include_news,
+    )
 
     return AgentResponse(**result)
 
@@ -170,7 +217,7 @@ async def news_endpoint(
     headlines, err = get_news_items(place)
 
     if err:
-        raise HTTPException(status_code=502, detail=f"News retrieval failed: {err}")
+        raise HTTPException(status_code=502, detail="News retrieval failed")
 
     return {
         "place": place,

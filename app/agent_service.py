@@ -138,28 +138,39 @@ def _extract_final_message(messages: List[BaseMessage]) -> str:
 # -----------------------------------------------------
 # Helper: build debug info from messages (tool calls + results)
 # -----------------------------------------------------
-def _build_debug(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
-    debug_steps: List[Dict[str, Any]] = []
-    pending_tools: Dict[str, Dict[str, Any]] = {}
-
+def _collect_tool_calls(messages: List[BaseMessage]) -> Dict[str, Dict[str, Any]]:
+    pending: Dict[str, Dict[str, Any]] = {}
     for msg in messages:
-        if isinstance(msg, AIMessage) and msg.tool_calls:
-            for tc in msg.tool_calls:
-                call_id = tc.get("id")
-                if not call_id:
-                    continue
-                pending_tools[call_id] = {
-                    "tool": tc.get("name"),
-                    "tool_input": tc.get("args"),
-                    "observation": None,
-                }
-        elif isinstance(msg, ToolMessage):
-            call_id = getattr(msg, "tool_call_id", None)
-            if call_id and call_id in pending_tools:
-                pending_tools[call_id]["observation"] = msg.content
+        if not (isinstance(msg, AIMessage) and msg.tool_calls):
+            continue
+        for tc in msg.tool_calls:
+            call_id = tc.get("id")
+            if not call_id:
+                continue
+            pending[call_id] = {
+                "tool": tc.get("name"),
+                "tool_input": tc.get("args"),
+                "observation": None,
+            }
+    return pending
 
-    debug_steps.extend(pending_tools.values())
-    return debug_steps
+
+def _attach_tool_observations(messages: List[BaseMessage], pending: Dict[str, Dict[str, Any]]) -> None:
+    if not pending:
+        return
+    for msg in messages:
+        if not isinstance(msg, ToolMessage):
+            continue
+        call_id = getattr(msg, "tool_call_id", None)
+        if call_id and call_id in pending:
+            pending[call_id]["observation"] = msg.content
+
+
+def _build_debug(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
+    pending_tools = _collect_tool_calls(messages)
+    _attach_tool_observations(messages, pending_tools)
+    return list(pending_tools.values())
+
 
 
 def _extract_called_tools(messages: List[BaseMessage]) -> Set[str]:
