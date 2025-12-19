@@ -149,13 +149,15 @@ async def run_agent(
     if not include_news:
         policy_lines.append("- Do NOT call news_tool or include news unless explicitly asked.")
 
-    # ADD these two hard requirements:
+    # ADD additional policies
     policy_lines.extend([
-        "- Always produce a one-paragraph risk recommendation for the specified location.",
-        "- Use the city_risk_tool each turn to ground your answer on current weather/news signals.",
-        "- Do NOT include explicit weather/news text in the final paragraph unless the user asked for it or a new update is available.",
-        "- If the user asks about disruptions or 'where' they are, ground the answer using recent news: list up to 3 named places if present, otherwise say 'no specific locations reported'."
-    ])
+    "- Always produce a one-paragraph risk recommendation for the specified location.",
+    "- Use the city_risk_tool each turn to ground your answer on current weather/news signals.",
+    "- Do NOT include explicit weather/news text in the final paragraph unless the user asked for it or a new update is available.",
+    "- If the user asks about disruptions or 'where' they are, ground the answer using recent news: list up to 3 named places if present, otherwise say 'no specific locations reported'.",
+    f"- If the user's question mentions a different place than '{place}', begin with: \"You asked about <other place> but your selected location is {place}. To get updates for <other place>, change the Location.\" Then provide the recommendation for {place} only."
+])
+
 
     user_prompt = "\n".join(policy_lines) + "\n\n---\n\n" + user_prompt
 
