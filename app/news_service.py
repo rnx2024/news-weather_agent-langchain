@@ -133,7 +133,8 @@ def get_news_items(place: str) -> Tuple[List[Dict[str, Any]], str]:
 
     data, err = get_json_with_retry(settings.serpapi_search_url, params)
     if err:
-        log.error("SerpAPI error for '%s': %s", place, err)
+        # Do NOT log user-controlled data (place)
+        log.error("SerpAPI request failed")
         return [], err
 
     results = data.get("news_results") or data.get("organic_results") or []
@@ -147,9 +148,7 @@ def get_news_items(place: str) -> Tuple[List[Dict[str, Any]], str]:
         date_raw = item.get("date") or item.get("published")
         parsed_date = _parse_serpapi_date(date_raw)
 
-        if not parsed_date:
-            continue
-        if parsed_date < cutoff:
+        if not parsed_date or parsed_date < cutoff:
             continue
 
         filtered.append(
