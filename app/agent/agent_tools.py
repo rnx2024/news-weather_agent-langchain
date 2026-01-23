@@ -1,150 +1,29 @@
-# app/agent_tools.py
+# app/agent_tools.py (UPDATED: delegates helpers; public tool names/signatures unchanged)
 from __future__ import annotations
 
-import os, json, time
-from typing import Callable, Any, Optional
+from typing import Any, Optional
 from pydantic import BaseModel
 from langchain_core.tools import tool
-from app.session_cache import get_last_exchange, mark_sent
-import redis  # <-- UPDATED: force sync redis client (prevents "coroutine ... was never awaited")
 
-from app.weather_service import (
-    get_weather_line,
-    get_weather_summary,
-    classify_weather_code,
+from app.session.session_cache import get_last_exchange, mark_sent  # unchanged imports (even if unused)
+from app.weather.weather_service import get_weather_line, get_weather_summary, classify_weather_code
+from app.news.news_service import get_news_items
+
+from app.tooling.sync_cache import (
+    CACHE_TTL_SECONDS_DEFAULT,
+    cache_get_json,
+    cache_get_str,
+    cache_set_json,
+    cache_set_str,
+    norm,
 )
-from app.news_service import get_news_items
+from app.tooling.retry_rate_limit import RateLimiter, retry
 
 
 # -----------------------------
 # Global cache (Redis) for tools
 # -----------------------------
-CACHE_TTL_SECONDS = 3600
-_sync_redis: Optional[redis.Redis] = None  # <-- UPDATED
-
-
-def _get_sync_redis() -> Optional[redis.Redis]:  # <-- UPDATED
-    """
-    Sync Redis client for LangGraph sync tool calls.
-    Uses REDIS_URL. Safe to return None if misconfigured.
-    """
-    global _sync_redis
-    if _sync_redis is not None:
-        return _sync_redis
-
-    url = os.environ.get("REDIS_URL")
-    if not url:
-        return None
-
-    try:
-        _sync_redis = redis.Redis.from_url(  # <-- UPDATED
-            url,
-            decode_responses=True,
-            socket_connect_timeout=5,
-            socket_timeout=5,
-            health_check_interval=30,
-        )
-        # Fail fast at init time (but still non-fatal)
-        _sync_redis.ping()
-        return _sync_redis
-    except Exception:
-        _sync_redis = None
-        return None
-
-
-def _norm(s: str) -> str:
-    return (s or "").strip().lower()
-
-
-def _cache_get_str(key: str) -> Optional[str]:
-    r = _get_sync_redis()
-    if r is None:
-        return None
-    try:
-        v = r.get(key)
-        return v if v is not None else None
-    except Exception:
-        return None
-
-
-def _cache_set_str(key: str, value: str, ttl: int = CACHE_TTL_SECONDS) -> None:
-    r = _get_sync_redis()
-    if r is None:
-        return
-    try:
-        r.set(key, value, ex=ttl)
-    except Exception:
-        return
-
-
-def _cache_get_json(key: str) -> Optional[Any]:
-    raw = _cache_get_str(key)
-    if raw is None:
-        return None
-    try:
-        return json.loads(raw)
-    except Exception:
-        return None
-
-
-def _cache_set_json(key: str, obj: Any, ttl: int = CACHE_TTL_SECONDS) -> None:
-    try:
-        raw = json.dumps(obj, ensure_ascii=False)
-    except Exception:
-        return
-    _cache_set_str(key, raw, ttl=ttl)
-
-
-# -----------------------------
-# Retry wrapper
-# -----------------------------
-def retry(fn: Callable[[], Any], retries: int = 3, base_delay: float = 0.5):
-    """Run a function with exponential backoff retries."""
-    attempt = 0
-    while True:
-        try:
-            return fn()
-        except Exception as e:
-            attempt += 1
-            if attempt > retries:
-                return f"ERROR: {str(e)}"
-            time.sleep(base_delay * (2 ** (attempt - 1)))
-
-
-# -----------------------------
-# Token-bucket rate limiter
-# -----------------------------
-class RateLimiter:
-    """Simple token-bucket rate limiter to throttle API/tool usage."""
-
-    def __init__(self, max_per_interval: int, interval_seconds: float):
-        self.max_per_interval = max_per_interval
-        self.interval_seconds = interval_seconds
-        self.tokens = max_per_interval
-        self.last_refill = time.time()
-
-    def acquire(self):
-        """Acquire a token, waiting if necessary."""
-        now = time.time()
-        elapsed = now - self.last_refill
-
-        intervals = int(elapsed // self.interval_seconds)
-        if intervals > 0:
-            self.tokens = min(
-                self.max_per_interval,
-                self.tokens + intervals * self.max_per_interval,
-            )
-            self.last_refill = now
-
-        if self.tokens == 0:
-            sleep_for = self.interval_seconds - (now - self.last_refill)
-            if sleep_for > 0:
-                time.sleep(sleep_for)
-            self.tokens = self.max_per_interval
-            self.last_refill = time.time()
-
-        self.tokens -= 1
-
+CACHE_TTL_SECONDS = CACHE_TTL_SECONDS_DEFAULT
 
 # -----------------------------
 # Initialize rate limiters
@@ -175,7 +54,6 @@ class RiskInput(BaseModel):
 # Helpers to reduce cognitive complexity
 # -----------------------------
 def _score_weather_risk(summary: Any) -> tuple[int, list[str]]:
-    """Return (risk_score_delta, reasons) from weather summary. No side effects."""
     if not summary:
         return 0, []
 
@@ -232,7 +110,6 @@ def _score_weather_risk(summary: Any) -> tuple[int, list[str]]:
 
 
 def _score_news_risk(place: str, headlines: Any) -> tuple[int, list[str]]:
-    """Return (risk_score_delta, reasons) from local news signals. No side effects."""
     if not headlines:
         return 0, []
 
@@ -278,32 +155,55 @@ def _classify_risk_level(score: int) -> str:
 @tool(args_schema=WeatherInput)
 def weather_tool(place: str, horizon: Optional[str] = "today") -> str:
     """Get a concise weather summary for a specific place and time horizon."""
-    # Cache key includes horizon for safety (even if get_weather_line ignores it today).
-    cache_key = f"cache:tool:weather_line:{_norm(place)}:{_norm(horizon or 'today')}"
-    cached = _cache_get_str(cache_key)
+    hz = (horizon or "today").strip().lower()
+    cache_key = f"cache:tool:weather_line:{norm(place)}:{norm(hz)}"
+    cached = cache_get_str(cache_key)
     if cached is not None:
         return cached
 
     weather_rate.acquire()
 
     def call():
-        line, err = get_weather_line(place)
-        if err:
-            raise RuntimeError(err)
-        return line or "No weather data."
+        if hz in ("today", "now"):
+            line, err = get_weather_line(place)
+            if err:
+                raise RuntimeError(err)
+            return line or "No weather data."
+
+        summary, err = get_weather_summary(place, hz)
+        if err or not summary:
+            raise RuntimeError(err or "No forecast data.")
+
+        cur = summary.get("current") or {}
+        day = summary.get("day") or {}
+        place_label = summary.get("place_label") or place
+        label = day.get("label") or hz
+        wx = cur.get("weather_text") or "n/a"
+        tmin = day.get("tmin_c")
+        tmax = day.get("tmax_c")
+        precip = day.get("precip_mm")
+        wind = day.get("wind_speed_max_kmh")
+
+        parts = [f"{place_label} ({label}): {wx}"]
+        if tmin is not None and tmax is not None:
+            parts.append(f"{tmin}–{tmax}°C")
+        if precip is not None:
+            parts.append(f"precip ~{precip} mm")
+        if wind is not None:
+            parts.append(f"wind max ~{wind} km/h")
+        return ", ".join(parts)
 
     out = retry(call)
-    # Cache even "No weather data." to reduce repeated calls
     if isinstance(out, str):
-        _cache_set_str(cache_key, out, ttl=CACHE_TTL_SECONDS)
+        cache_set_str(cache_key, out, ttl=CACHE_TTL_SECONDS)
     return out
 
 
 @tool(args_schema=NewsInput)
 def news_tool(place: str) -> str:
     """Fetch recent news headlines for a specific city or region."""
-    cache_key = f"cache:tool:news_lines:{_norm(place)}"
-    cached = _cache_get_str(cache_key)
+    cache_key = f"cache:tool:news_lines:{norm(place)}"
+    cached = cache_get_str(cache_key)
     if cached is not None:
         return cached
 
@@ -325,7 +225,7 @@ def news_tool(place: str) -> str:
 
     out = retry(call)
     if isinstance(out, str):
-        _cache_set_str(cache_key, out, ttl=CACHE_TTL_SECONDS)
+        cache_set_str(cache_key, out, ttl=CACHE_TTL_SECONDS)
     return out
 
 
@@ -339,29 +239,27 @@ def city_risk_tool(
     Assess city risk level (LOW, MEDIUM, HIGH) for outdoor activity and also consider travel conditions
     based on forecasted weather and recent local news.
     """
-
-    w_key = f"cache:tool:weather_summary:{_norm(place)}:{_norm(horizon)}"
-    n_key = f"cache:tool:news_items:{_norm(place)}"
+    w_key = f"cache:tool:weather_summary:{norm(place)}:{norm(horizon)}"
+    n_key = f"cache:tool:news_items:{norm(place)}"
 
     def _get_or_fetch_weather() -> Any:
-        cached = _cache_get_json(w_key)
+        cached = cache_get_json(w_key)
         if cached is not None:
             return cached
 
         summary, werr = get_weather_summary(place, horizon)
         if werr and not summary:
             raise RuntimeError(werr)
-        _cache_set_json(w_key, summary, ttl=CACHE_TTL_SECONDS)
+        cache_set_json(w_key, summary, ttl=CACHE_TTL_SECONDS)
         return summary
 
     def _get_or_fetch_news() -> Any:
-        cached = _cache_get_json(n_key)
+        cached = cache_get_json(n_key)
         if cached is not None:
             return cached
 
         headlines, _nerr = get_news_items(place)
-        # keep prior behavior: cache [] even on error/None
-        _cache_set_json(n_key, headlines or [], ttl=CACHE_TTL_SECONDS)
+        cache_set_json(n_key, headlines or [], ttl=CACHE_TTL_SECONDS)
         return headlines or []
 
     def _build_message(level: str, reasons: list[str]) -> str:

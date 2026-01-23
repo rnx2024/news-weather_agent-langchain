@@ -5,9 +5,9 @@ import logging
 from typing import List, Tuple, Dict, Any
 from datetime import datetime, timedelta, timezone
 
-from app.http_utils import get_json_with_retry
+from app.http.http_utils import get_json_with_retry
 from app.settings import settings
-from app.location_resolver import resolve_country_code
+from app.location.location_resolver import resolve_country_code
 
 log = logging.getLogger(__name__)
 

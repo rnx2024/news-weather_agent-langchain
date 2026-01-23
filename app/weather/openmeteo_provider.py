@@ -1,50 +1,12 @@
-# weather_service.py
+# app/weather/openmeteo_provider.py
 from __future__ import annotations
 
-import logging, requests
-from typing import Tuple, Dict, Any, Optional
+import requests
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Optional, Tuple
+from zoneinfo import ZoneInfo
 
-from app.http_utils import get_json_with_retry
 from app.settings import settings
-
-log = logging.getLogger(__name__)
-
-
-# -------------------------------------------------------------------
-# PART 1 — OpenWeather (simple current weather line)
-# -------------------------------------------------------------------
-
-def get_weather_raw(place: str) -> Tuple[Dict[str, Any], str]:
-    """
-    Call OpenWeather current weather endpoint.
-    URL is loaded from settings.openweather_current_url.
-    """
-    return get_json_with_retry(
-        settings.openweather_current_url,
-        {"q": place, "appid": settings.openweather_api_key, "units": "metric"},
-    )
-
-
-def get_weather_line(place: str) -> Tuple[str, str]:
-    """
-    Backwards-compatible one-line weather summary.
-    """
-    data, err = get_weather_raw(place)
-    if err:
-        # Do not include user-controlled data in returned error strings
-        return ("", f"Weather error: {err}")
-
-    name = data.get("name") or place
-    wx = (data.get("weather") or [{}])[0]
-    desc = wx.get("description") or "n/a"
-    temp = (data.get("main") or {}).get("temp", "n/a")
-
-    return (f"{name}: {desc}, {temp}°C", "")
-
-
-# -------------------------------------------------------------------
-# PART 2 — Open-Meteo (rich forecast + risk analysis)
-# -------------------------------------------------------------------
 
 # WMO code → readable description
 WEATHER_CODE_DESCRIPTIONS = {
@@ -85,6 +47,16 @@ _SNOW_CODES = {71, 73, 75, 77, 85, 86}
 _FOG_CODES = {45, 48}
 _CLEAR_OR_CLOUDY_CODES = {0, 1, 2, 3}
 
+_WEEKDAYS = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
 
 def weather_code_to_text(code: Optional[int]) -> str:
     return WEATHER_CODE_DESCRIPTIONS.get(code, "Unknown conditions")
@@ -119,7 +91,6 @@ def geocode_place(place: str, language: str = "en"):
         data = r.json() or {}
         results = data.get("results") or []
         if not results:
-            # Do not include user-controlled data in returned error strings
             return None, "No geocoding results."
 
         loc = results[0]
@@ -134,14 +105,14 @@ def geocode_place(place: str, language: str = "en"):
         return None, str(e)
 
 
-def fetch_openmeteo_forecast(lat: float, lon: float, timezone: str = "auto"):
+def fetch_openmeteo_forecast(lat: float, lon: float, timezone_name: str = "auto"):
     try:
         r = requests.get(
             settings.openmeteo_forecast_url,
             params={
                 "latitude": lat,
                 "longitude": lon,
-                "timezone": timezone,
+                "timezone": timezone_name,
                 "current": ",".join(
                     [
                         "temperature_2m",
@@ -162,7 +133,7 @@ def fetch_openmeteo_forecast(lat: float, lon: float, timezone: str = "auto"):
                         "wind_speed_10m_max",
                     ]
                 ),
-                "forecast_days": 2,
+                "forecast_days": 8,
             },
             timeout=8,
         )
@@ -179,13 +150,43 @@ def _pick_daily_value(daily: Dict[str, Any], key: str, idx: int):
     return None
 
 
+def _to_local_today(timezone_name: str) -> datetime:
+    try:
+        tz = ZoneInfo(timezone_name) if timezone_name and timezone_name != "auto" else timezone.utc
+    except Exception:
+        tz = timezone.utc
+    return datetime.now(tz=tz)
+
+
+def resolve_horizon_to_date_str(horizon: str, timezone_name: str) -> str:
+    h = (horizon or "").strip().lower()
+    now_local = _to_local_today(timezone_name)
+    today = now_local.date()
+
+    if h in ("now", "today", ""):
+        return today.isoformat()
+    if h == "tomorrow":
+        return (today + timedelta(days=1)).isoformat()
+
+    if h in _WEEKDAYS:
+        target = _WEEKDAYS[h]
+        delta = (target - today.weekday()) % 7
+        return (today + timedelta(days=delta)).isoformat()
+
+    # absolute ISO date passthrough (YYYY-MM-DD)
+    if len(h) == 10 and h[4] == "-" and h[7] == "-":
+        return h
+
+    return today.isoformat()
+
+
 def get_weather_summary(place: str, horizon: str = "today", language: str = "en"):
     loc, err = geocode_place(place, language)
     if err or not loc:
         return None, err
 
     raw, werr = fetch_openmeteo_forecast(
-        lat=loc["latitude"], lon=loc["longitude"], timezone=loc["timezone"]
+        lat=loc["latitude"], lon=loc["longitude"], timezone_name=loc["timezone"]
     )
     if werr or not raw:
         return None, werr
@@ -193,7 +194,18 @@ def get_weather_summary(place: str, horizon: str = "today", language: str = "en"
     current = raw.get("current") or {}
     daily = raw.get("daily") or {}
 
-    idx = 0 if horizon in ("now", "today") else 1
+    times = daily.get("time") or []
+    target_date = resolve_horizon_to_date_str(horizon, loc.get("timezone") or "auto")
+
+    idx = 0
+    if isinstance(times, list) and times:
+        try:
+            idx = times.index(target_date)
+        except ValueError:
+            idx = 0 if horizon in ("now", "today") else 1
+            idx = max(0, min(idx, len(times) - 1))
+    else:
+        idx = 0 if horizon in ("now", "today") else 1
 
     return {
         "place_label": f"{loc['name']}, {loc['country']}",
@@ -207,7 +219,7 @@ def get_weather_summary(place: str, horizon: str = "today", language: str = "en"
             "weather_text": weather_code_to_text(current.get("weather_code")),
         },
         "day": {
-            "label": "today" if idx == 0 else "tomorrow",
+            "label": target_date,
             "tmin_c": _pick_daily_value(daily, "temperature_2m_min", idx),
             "tmax_c": _pick_daily_value(daily, "temperature_2m_max", idx),
             "precip_mm": _pick_daily_value(daily, "precipitation_sum", idx),

@@ -1,9 +1,10 @@
-# app/http_utils.py
+# app/http_client.py
 from __future__ import annotations
 
 import logging
+from typing import Any, Dict, Tuple
+
 import httpx
-from typing import Dict, Any, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -21,8 +22,6 @@ def get_json_with_retry(
             r = httpx.get(url, params=params, timeout=timeout)
 
             if r.status_code != 200:
-                # Do not log user-controlled data (params may include user input and secrets)
-                # Do not log response body (can contain sensitive or unexpected content)
                 log.error("HTTP %s from %s [attempt %s]", r.status_code, url, attempt)
                 last_err = str(r.status_code)
                 continue
@@ -30,7 +29,6 @@ def get_json_with_retry(
             return r.json(), ""
 
         except Exception as e:
-            # Do not log exception message; it can contain user-controlled data
             last_err = str(e)
             log.error("Exception during request to %s", url)
 

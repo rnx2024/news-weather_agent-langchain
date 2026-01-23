@@ -8,11 +8,12 @@ from langchain_core.messages import BaseMessage, AIMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
 from app.settings import settings
-from app.agent_tools import weather_tool, news_tool, city_risk_tool
-from app.agent_prompts import LOCAL_INTELLIGENCE_SYSTEM_PROMPT
+from app.agent.agent_tools import weather_tool, news_tool, city_risk_tool
+from app.agent.agent_prompts import LOCAL_INTELLIGENCE_SYSTEM_PROMPT
 
-# NEW: session memory (Redis-backed)
-from app.session_cache import get_last_exchange, should_include, mark_tools_called
+# session memory (Redis-backed)
+from app.session.session_cache import get_last_exchange, should_include, mark_tools_called
+from app.agent.agent_policy import decide_tool_includes, detect_force_signals
 
 
 # -----------------------------------------------------
@@ -30,7 +31,6 @@ tools = [weather_tool, news_tool, city_risk_tool]
 # -----------------------------------------------------
 # Tool-gated helpers
 # -----------------------------------------------------
-# cache of gated agents keyed by (include_weather, include_news)
 _REACT_APP_CACHE: Dict[Tuple[bool, bool], Any] = {}
 
 
@@ -51,58 +51,8 @@ def _get_react_app(include_weather: bool, include_news: bool):
     return app
 
 
-def _decide_includes(question: Optional[str]) -> Tuple[bool, bool]:
-    if not question:
-        return True, True
-
-    q = question.lower()
-    inc_w = any(
-        t in q
-        for t in (
-            "weather",
-            "forecast",
-            "temperature",
-            "rain",
-            "storm",
-            "wind",
-            "uv",
-            "heat",
-            "snow",
-            "fog",
-            "typhoon",
-            "hurricane",
-        )
-    )
-    inc_n = any(
-        t in q
-        for t in (
-            "news",
-            "headline",
-            "headlines",
-            "update",
-            "updates",
-            "disruption",
-            "disruptions",
-            "incident",
-            "incidents",
-            "protest",
-            "strike",
-            "closure",
-            "closures",
-            "outage",
-            "traffic",
-            "where",
-            "location",
-            "locations",
-            "area",
-            "areas",
-        )
-    )
-    return (inc_w, inc_n) if (inc_w or inc_n) else (False, False)
-
-
 # -----------------------------------------------------
-# Build LangGraph ReAct agent
+# Build LangGraph ReAct agent (unused in run_agent; kept for compatibility)
 # -----------------------------------------------------
 react_app = create_react_agent(
     model=_llm,
@@ -124,9 +74,6 @@ def _build_user_prompt(place: str, question: Optional[str]) -> str:
     )
 
 
-# -----------------------------------------------------
-# Helper: extract final assistant message from LangGraph state
-# -----------------------------------------------------
 def _extract_final_message(messages: List[BaseMessage]) -> str:
     final_text = ""
     for msg in messages:
@@ -135,9 +82,6 @@ def _extract_final_message(messages: List[BaseMessage]) -> str:
     return final_text or ""
 
 
-# -----------------------------------------------------
-# Helper: build debug info from messages (tool calls + results)
-# -----------------------------------------------------
 def _collect_tool_calls(messages: List[BaseMessage]) -> Dict[str, Dict[str, Any]]:
     pending: Dict[str, Dict[str, Any]] = {}
     for msg in messages:
@@ -172,7 +116,6 @@ def _build_debug(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
     return list(pending_tools.values())
 
 
-
 def _extract_called_tools(messages: List[BaseMessage]) -> Set[str]:
     called: Set[str] = set()
     for msg in messages:
@@ -196,17 +139,14 @@ async def run_agent(
 ) -> Dict[str, Any]:
     """
     Run the LangGraph ReAct agent with tool gating per request.
-    Signature matches your router call and fixes the TypeError.
     """
     user_prompt = _build_user_prompt(place, question)
 
     # decide tool availability for this turn
-    include_weather, include_news = _decide_includes(question)
+    include_weather, include_news = decide_tool_includes(question)
 
     # session-aware suppression (Redis)
-    q_lc = (question or "").lower()
-    force_weather = "weather" in q_lc
-    force_news = "news" in q_lc
+    force_weather, force_news = detect_force_signals(question or "")
     allow_weather, allow_news = await should_include(session_id, force_weather, force_news)
 
     if include_weather and not allow_weather:
@@ -230,7 +170,6 @@ async def run_agent(
         if last_reply:
             policy_lines.append(f"  - Assistant: {last_reply}")
 
-    # ADD additional policies
     policy_lines.extend(
         [
             "- Always produce a one-paragraph risk recommendation for the specified location.",
@@ -246,9 +185,7 @@ async def run_agent(
     # use a gated agent (hard enforcement)
     app = _get_react_app(include_weather=include_weather, include_news=include_news)
 
-    # invoke remains synchronous; awaiting here is fine because function is async
     state: Dict[str, Any] = app.invoke({"messages": [{"role": "user", "content": user_prompt}]})
-
     messages = state.get("messages", []) or []
     final_text = _extract_final_message(messages)
 

@@ -8,13 +8,13 @@ from slowapi.errors import RateLimitExceeded
 
 from app.settings import settings
 from app.routes import router as api_router
-from app.ratelimit import limiter
+from app.tooling.ratelimit import limiter
 from app.redis_client import init_redis, close_redis
 
 
 app = FastAPI(
-    title="News & Weather Agent API",
-    version="0.1.0",
+    title="TripBites API",
+    version="0.2.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -33,7 +33,7 @@ allowed_origins = [origin.strip() for origin in settings.frontend_cors_origin.sp
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=True,  # <-- UPDATED: required if session auth uses cookies/Authorization
+    allow_credentials=True, 
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -57,7 +57,7 @@ async def _shutdown():
 @app.get("/", tags=["meta"])
 async def root():
     return {
-        "name": "SmartNews API",
+        "name": "TripBites API",
         "status": "ok",
         "docs": "/docs",
     }
