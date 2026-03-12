@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Annotated, Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Header, Depends, Request
 from pydantic import BaseModel
@@ -16,7 +16,9 @@ from app.tooling.ratelimit import limiter
 router = APIRouter()
 
 
-def require_api_key(x_api_key: str = Header(..., alias="x-api-key")):
+def require_api_key(
+    x_api_key: Annotated[str, Header(..., alias="x-api-key")],
+) -> None:
     if x_api_key != settings.api_key:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
@@ -46,12 +48,12 @@ async def create_session(request: Request) -> Dict[str, str]:
     return {"session_id": session_id, "session_token": session_token}
 
 
-@router.post("/chat", response_model=AgentResponse, tags=["agent"], dependencies=[Depends(require_api_key)])
+@router.post("/chat", tags=["agent"], dependencies=[Depends(require_api_key)])
 @limiter.limit("15/minute")
 async def agent_endpoint(
     request: Request,
     payload: AgentRequest,
-    session_id: str = Depends(require_session),
+    session_id: Annotated[str, Depends(require_session)],
 ) -> AgentResponse:
     question = payload.question or ""
 
@@ -64,11 +66,16 @@ async def agent_endpoint(
     return AgentResponse(**result)
 
 
-@router.get("/weather", tags=["weather"], dependencies=[Depends(require_api_key)])
+@router.get(
+    "/weather",
+    tags=["weather"],
+    dependencies=[Depends(require_api_key)],
+    responses={502: {"description": "Weather provider request failed"}},
+)
 @limiter.limit("15/minute")
 async def weather_endpoint(
     request: Request,
-    place: str = Query(..., description="City or place name"),
+    place: Annotated[str, Query(..., description="City or place name")],
 ) -> Dict[str, str]:
     line, err = get_weather_line(place)
     if err:
@@ -76,11 +83,16 @@ async def weather_endpoint(
     return {"place": place, "summary": line}
 
 
-@router.get("/news", tags=["news"], dependencies=[Depends(require_api_key)])
+@router.get(
+    "/news",
+    tags=["news"],
+    dependencies=[Depends(require_api_key)],
+    responses={502: {"description": "News retrieval failed"}},
+)
 @limiter.limit("15/minute")
 async def news_endpoint(
     request: Request,
-    place: str = Query(..., description="City or topic for news search"),
+    place: Annotated[str, Query(..., description="City or topic for news search")],
 ) -> Dict[str, Any]:
     headlines, err = get_news_items(place)
     if err:
