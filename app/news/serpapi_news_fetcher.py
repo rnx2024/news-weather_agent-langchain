@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Tuple
 
 from app.http.http_utils import get_json_with_retry
-from app.location.location_resolver import resolve_country_code
+from app.location.resolve_country import resolve_country_code
 from app.news.serpapi_date_parser import parse_serpapi_date
 from app.settings import settings
 

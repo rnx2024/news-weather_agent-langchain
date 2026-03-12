@@ -4,30 +4,38 @@ from __future__ import annotations
 import os
 from typing import Optional
 import asyncio
-import libsql
 
-_LIBSQL_URL = os.environ.get("LIBSQL_URL")
-_LIBSQL_TOKEN = os.environ.get("LIBSQL_AUTH_TOKEN")
-
-_client: Optional[libsql.Connection] = None
+_client: Optional[object] = None
 
 
-def get_client() -> libsql.Connection:
+def _load_libsql():
+    try:
+        import libsql  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("libsql package is not installed. Add it before using app.db.") from exc
+    return libsql
+
+
+def get_client():
     """
     Singleton libSQL client (remote-only).
     """
     global _client
 
     if _client is None:
-        if not _LIBSQL_URL or not _LIBSQL_TOKEN:
+        libsql = _load_libsql()
+        libsql_url = os.environ.get("LIBSQL_URL")
+        libsql_token = os.environ.get("LIBSQL_AUTH_TOKEN")
+
+        if not libsql_url or not libsql_token:
             raise RuntimeError("LIBSQL_URL or LIBSQL_AUTH_TOKEN is not set")
 
         # libsql Python SDK uses a local replica file and syncs with Turso.
         # Keep your env var names unchanged.
         _client = libsql.connect(
             "smartnews.db",
-            sync_url=_LIBSQL_URL,
-            auth_token=_LIBSQL_TOKEN,
+            sync_url=libsql_url,
+            auth_token=libsql_token,
         )
 
     return _client

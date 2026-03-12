@@ -5,7 +5,6 @@ from typing import Any, Optional
 from pydantic import BaseModel
 from langchain_core.tools import tool
 
-from app.session.session_cache import get_last_exchange, mark_sent  # unchanged imports (even if unused)
 from app.weather.weather_service import get_weather_line, get_weather_summary, classify_weather_code
 from app.news.news_service import get_news_items
 

@@ -33,5 +33,5 @@ def to_int(v: Any, default: int = 0) -> int:
             return int(v)
         s = str(v).strip()
         return int(s) if s else default
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return default

@@ -1,8 +1,6 @@
 # app/session_cache.py (UPDATED: facade; public function names unchanged)
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict, Iterable, Tuple
-
 from app.session.session_store import (
     get_last_exchange,
     get_last_sent_timestamps,

@@ -10,9 +10,14 @@ Redis client lifecycle for SmartNews.
 - Used ONLY for short-lived session + cache data
 """
 
-import os
+import logging
 from typing import Optional
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
+
+from app.settings import settings
+
+log = logging.getLogger(__name__)
 
 redis: Optional[Redis] = None
 
@@ -27,11 +32,14 @@ async def init_redis() -> None:
     if redis is not None:
         return
 
-    redis_url = os.environ.get("REDIS_URL")
+    redis_url = settings.redis_url
     if not redis_url:
-        raise RuntimeError("REDIS_URL is not set")
+        if settings.redis_required:
+            raise RuntimeError("REDIS_URL is not set")
+        log.warning("REDIS_URL is not set. Continuing without Redis.")
+        return
 
-    redis = Redis.from_url(
+    client = Redis.from_url(
         redis_url,
         decode_responses=True,
         socket_connect_timeout=5,
@@ -39,8 +47,17 @@ async def init_redis() -> None:
         health_check_interval=30,
     )
 
-    # Fail fast if credentials / TLS are wrong
-    await redis.ping()
+    try:
+        # Health check connection eagerly to avoid hidden runtime failures.
+        await client.ping()
+    except (RedisError, OSError) as exc:
+        await client.aclose()
+        if settings.redis_required:
+            raise RuntimeError(f"Redis connection failed: {exc}") from exc
+        log.warning("Redis unavailable at startup. Continuing without Redis: %s", exc)
+        return
+
+    redis = client
 
 
 async def close_redis() -> None:
