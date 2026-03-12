@@ -19,17 +19,27 @@ def get_json_with_retry(
 
     for attempt in range(1, retries + 1):
         try:
-            r = httpx.get(url, params=params, timeout=timeout)
+            response = httpx.get(url, params=params, timeout=timeout)
+            response.raise_for_status()
+        except httpx.TimeoutException:
+            last_err = "timeout"
+            log.warning("Timeout from %s [attempt %s/%s]", url, attempt, retries)
+            continue
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else "unknown"
+            last_err = str(status)
+            log.error("HTTP %s from %s [attempt %s/%s]", status, url, attempt, retries)
+            continue
+        except httpx.RequestError as exc:
+            last_err = str(exc)
+            log.error("Request error from %s [attempt %s/%s]: %s", url, attempt, retries, exc)
+            continue
 
-            if r.status_code != 200:
-                log.error("HTTP %s from %s [attempt %s]", r.status_code, url, attempt)
-                last_err = str(r.status_code)
-                continue
-
-            return r.json(), ""
-
-        except Exception as e:
-            last_err = str(e)
-            log.error("Exception during request to %s", url)
+        try:
+            return response.json(), ""
+        except ValueError:
+            last_err = "invalid_json"
+            log.error("Invalid JSON from %s [attempt %s/%s]", url, attempt, retries)
+            continue
 
     return {}, last_err

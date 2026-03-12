@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import requests
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Tuple
-from zoneinfo import ZoneInfo
+from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.settings import settings
 
@@ -82,32 +82,39 @@ def classify_weather_code(code: Optional[int]) -> str:
 
 def geocode_place(place: str, language: str = "en"):
     try:
-        r = requests.get(
+        response = requests.get(
             settings.openmeteo_geocode_url,
             params={"name": place, "count": 1, "language": language, "format": "json"},
             timeout=5,
         )
-        r.raise_for_status()
-        data = r.json() or {}
-        results = data.get("results") or []
-        if not results:
-            return None, "No geocoding results."
+        response.raise_for_status()
+    except requests.Timeout:
+        return None, "Open-Meteo geocoding timeout."
+    except requests.RequestException as exc:
+        return None, str(exc)
 
-        loc = results[0]
-        return {
-            "name": loc.get("name"),
-            "country": loc.get("country"),
-            "latitude": loc.get("latitude"),
-            "longitude": loc.get("longitude"),
-            "timezone": loc.get("timezone") or "auto",
-        }, None
-    except Exception as e:
-        return None, str(e)
+    try:
+        data = response.json() or {}
+    except ValueError:
+        return None, "Invalid JSON from Open-Meteo geocoding."
+
+    results = data.get("results") or []
+    if not results:
+        return None, "No geocoding results."
+
+    loc = results[0]
+    return {
+        "name": loc.get("name"),
+        "country": loc.get("country"),
+        "latitude": loc.get("latitude"),
+        "longitude": loc.get("longitude"),
+        "timezone": loc.get("timezone") or "auto",
+    }, None
 
 
 def fetch_openmeteo_forecast(lat: float, lon: float, timezone_name: str = "auto"):
     try:
-        r = requests.get(
+        response = requests.get(
             settings.openmeteo_forecast_url,
             params={
                 "latitude": lat,
@@ -137,10 +144,16 @@ def fetch_openmeteo_forecast(lat: float, lon: float, timezone_name: str = "auto"
             },
             timeout=8,
         )
-        r.raise_for_status()
-        return r.json(), None
-    except Exception as e:
-        return None, str(e)
+        response.raise_for_status()
+    except requests.Timeout:
+        return None, "Open-Meteo forecast timeout."
+    except requests.RequestException as exc:
+        return None, str(exc)
+
+    try:
+        return response.json(), None
+    except ValueError:
+        return None, "Invalid JSON from Open-Meteo forecast."
 
 
 def _pick_daily_value(daily: Dict[str, Any], key: str, idx: int):
@@ -153,7 +166,7 @@ def _pick_daily_value(daily: Dict[str, Any], key: str, idx: int):
 def _to_local_today(timezone_name: str) -> datetime:
     try:
         tz = ZoneInfo(timezone_name) if timezone_name and timezone_name != "auto" else timezone.utc
-    except Exception:
+    except ZoneInfoNotFoundError:
         tz = timezone.utc
     return datetime.now(tz=tz)
 
@@ -185,8 +198,16 @@ def get_weather_summary(place: str, horizon: str = "today", language: str = "en"
     if err or not loc:
         return None, err
 
+    lat = loc.get("latitude")
+    lon = loc.get("longitude")
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return None, "Invalid geocoding coordinates."
+
+    normalized_horizon = (horizon or "").strip().lower()
     raw, werr = fetch_openmeteo_forecast(
-        lat=loc["latitude"], lon=loc["longitude"], timezone_name=loc["timezone"]
+        lat=float(lat),
+        lon=float(lon),
+        timezone_name=loc.get("timezone") or "auto",
     )
     if werr or not raw:
         return None, werr
@@ -195,17 +216,17 @@ def get_weather_summary(place: str, horizon: str = "today", language: str = "en"
     daily = raw.get("daily") or {}
 
     times = daily.get("time") or []
-    target_date = resolve_horizon_to_date_str(horizon, loc.get("timezone") or "auto")
+    target_date = resolve_horizon_to_date_str(normalized_horizon, loc.get("timezone") or "auto")
 
     idx = 0
     if isinstance(times, list) and times:
         try:
             idx = times.index(target_date)
         except ValueError:
-            idx = 0 if horizon in ("now", "today") else 1
+            idx = 0 if normalized_horizon in ("now", "today") else 1
             idx = max(0, min(idx, len(times) - 1))
     else:
-        idx = 0 if horizon in ("now", "today") else 1
+        idx = 0 if normalized_horizon in ("now", "today") else 1
 
     return {
         "place_label": f"{loc['name']}, {loc['country']}",

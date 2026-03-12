@@ -1,7 +1,7 @@
 # app/agent_service.py
 from __future__ import annotations
 
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, AIMessage, ToolMessage
@@ -26,8 +26,6 @@ _llm = ChatOpenAI(
     base_url=settings.openrouter_base_url,
 )
 
-tools = [weather_tool, news_tool, city_risk_tool]
-
 # -----------------------------------------------------
 # Tool-gated helpers
 # -----------------------------------------------------
@@ -49,16 +47,6 @@ def _get_react_app(include_weather: bool, include_news: bool):
     app = create_react_agent(model=_llm, tools=gated, prompt=LOCAL_INTELLIGENCE_SYSTEM_PROMPT)
     _REACT_APP_CACHE[key] = app
     return app
-
-
-# -----------------------------------------------------
-# Build LangGraph ReAct agent (unused in run_agent; kept for compatibility)
-# -----------------------------------------------------
-react_app = create_react_agent(
-    model=_llm,
-    tools=tools,
-    prompt=LOCAL_INTELLIGENCE_SYSTEM_PROMPT,
-)
 
 
 def _build_user_prompt(place: str, question: Optional[str]) -> str:
@@ -185,7 +173,7 @@ async def run_agent(
     # use a gated agent (hard enforcement)
     app = _get_react_app(include_weather=include_weather, include_news=include_news)
 
-    state: Dict[str, Any] = app.invoke({"messages": [{"role": "user", "content": user_prompt}]})
+    state: Dict[str, Any] = await app.ainvoke({"messages": [{"role": "user", "content": user_prompt}]})
     messages = state.get("messages", []) or []
     final_text = _extract_final_message(messages)
 

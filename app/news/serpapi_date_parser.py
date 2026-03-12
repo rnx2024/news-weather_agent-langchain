@@ -23,7 +23,7 @@ def _try_parse_absolute_date(s_clean: str) -> datetime | None:
         try:
             dt = datetime.strptime(s_clean, fmt)
             return dt.replace(tzinfo=timezone.utc)
-        except Exception:
+        except ValueError:
             continue
     return None
 
@@ -31,14 +31,14 @@ def _try_parse_absolute_date(s_clean: str) -> datetime | None:
 def _try_parse_absolute_date_with_time(s_clean: str) -> datetime | None:
     try:
         core = s_clean.split(" ")[0]
-    except Exception:
+    except (AttributeError, IndexError):
         return None
 
     for fmt in _ABSOLUTE_DATE_CORE_FORMATS:
         try:
             dt = datetime.strptime(core, fmt)
             return dt.replace(tzinfo=timezone.utc)
-        except Exception:
+        except ValueError:
             continue
     return None
 

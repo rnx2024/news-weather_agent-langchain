@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, Optional
 
 import redis
+from redis.exceptions import RedisError
+
+from app.settings import settings
 
 CACHE_TTL_SECONDS_DEFAULT = 3600
 
@@ -21,7 +23,7 @@ def _get_sync_redis() -> Optional[redis.Redis]:
     if _sync_redis is not None:
         return _sync_redis
 
-    url = os.environ.get("REDIS_URL")
+    url = settings.redis_url
     if not url:
         return None
 
@@ -35,7 +37,7 @@ def _get_sync_redis() -> Optional[redis.Redis]:
         )
         _sync_redis.ping()
         return _sync_redis
-    except Exception:
+    except RedisError:
         _sync_redis = None
         return None
 
@@ -51,7 +53,7 @@ def cache_get_str(key: str) -> Optional[str]:
     try:
         v = r.get(key)
         return v if v is not None else None
-    except Exception:
+    except RedisError:
         return None
 
 
@@ -61,7 +63,7 @@ def cache_set_str(key: str, value: str, ttl: int = CACHE_TTL_SECONDS_DEFAULT) ->
         return
     try:
         r.set(key, value, ex=ttl)
-    except Exception:
+    except RedisError:
         return
 
 
@@ -71,13 +73,13 @@ def cache_get_json(key: str) -> Optional[Any]:
         return None
     try:
         return json.loads(raw)
-    except Exception:
+    except (TypeError, ValueError):
         return None
 
 
 def cache_set_json(key: str, obj: Any, ttl: int = CACHE_TTL_SECONDS_DEFAULT) -> None:
     try:
         raw = json.dumps(obj, ensure_ascii=False)
-    except Exception:
+    except (TypeError, ValueError):
         return
     cache_set_str(key, raw, ttl=ttl)

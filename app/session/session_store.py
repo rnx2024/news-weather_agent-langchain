@@ -1,11 +1,15 @@
 # app/session/session_store.py
 from __future__ import annotations
 
+import logging
 import time
-from typing import Any, Awaitable, Callable, Dict, Iterable, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, Tuple
 
 from app.redis_client import redis
 from app.session.session_keys import DEFAULT_SESSION_TTL, ONE_HOUR, news_key, sess_key, to_int, weather_key
+from redis.exceptions import RedisError
+
+log = logging.getLogger(__name__)
 
 
 async def get_session_state(session_id: str) -> Dict[str, Any]:
@@ -14,7 +18,8 @@ async def get_session_state(session_id: str) -> Dict[str, Any]:
     try:
         data = await redis.hgetall(sess_key(session_id))
         return data or {}
-    except Exception:
+    except RedisError as exc:
+        log.warning("Redis hgetall failed in get_session_state [session_id=%s]: %s", session_id, exc)
         return {}
 
 
@@ -25,7 +30,8 @@ async def should_include(session_id: str, force_weather: bool, force_news: bool)
     now = int(time.time())
     try:
         data = await redis.hgetall(sess_key(session_id))
-    except Exception:
+    except RedisError as exc:
+        log.warning("Redis hgetall failed in should_include [session_id=%s]: %s", session_id, exc)
         return True, True
 
     last_w = to_int((data or {}).get("last_weather_sent_at"), 0)
@@ -67,7 +73,8 @@ async def mark_sent(
     try:
         await redis.hset(sk, mapping=mapping)
         await redis.expire(sk, ttl_seconds)
-    except Exception:
+    except RedisError as exc:
+        log.warning("Redis write failed in mark_sent [session_id=%s]: %s", session_id, exc)
         return
 
 
@@ -100,7 +107,8 @@ async def get_last_exchange(session_id: str) -> tuple[str | None, str | None]:
             "last_agent_reply",
         )
         return last_user, last_reply
-    except Exception:
+    except RedisError as exc:
+        log.warning("Redis hmget failed in get_last_exchange [session_id=%s]: %s", session_id, exc)
         return None, None
 
 
@@ -115,7 +123,8 @@ async def get_last_sent_timestamps(session_id: str) -> tuple[int, int, int]:
             "last_chat_sent_at",
         )
         return to_int(w, 0), to_int(n, 0), to_int(c, 0)
-    except Exception:
+    except RedisError as exc:
+        log.warning("Redis hmget failed in get_last_sent_timestamps [session_id=%s]: %s", session_id, exc)
         return 0, 0, 0
 
 
@@ -132,7 +141,8 @@ async def get_or_set(
         cached = await redis.get(key)
         if cached is not None:
             return cached
-    except Exception:
+    except RedisError as exc:
+        log.warning("Redis get failed in get_or_set [key=%s]: %s", key, exc)
         v = compute_fn()
         return await v if hasattr(v, "__await__") else v  # type: ignore[misc]
 
@@ -140,7 +150,8 @@ async def get_or_set(
     value = await v if hasattr(v, "__await__") else v  # type: ignore[misc]
     try:
         await redis.set(key, value, ex=ttl_seconds)
-    except Exception:
+    except RedisError as exc:
+        log.warning("Redis set failed in get_or_set [key=%s]: %s", key, exc)
         pass
     return value
 

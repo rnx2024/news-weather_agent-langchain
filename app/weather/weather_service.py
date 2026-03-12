@@ -1,8 +1,6 @@
 # weather_service.py (UPDATED: facade; public function names unchanged)
 from __future__ import annotations
 
-from typing import Optional
-
 from app.weather.openmeteo_provider import (
     classify_weather_code,
     get_weather_summary,

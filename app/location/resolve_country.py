@@ -14,19 +14,23 @@ def resolve_country_code(place: str) -> Optional[str]:
     Returns None if the place cannot be resolved.
     """
     try:
-        r = httpx.get(
+        response = httpx.get(
             settings.openmeteo_geocode_url,
             params={"name": place, "count": 1},
             timeout=5.0,
         )
-        if r.status_code != 200:
-            return None
-
-        data = r.json()
-        results = data.get("results")
-        if not results:
-            return None
-
-        return results[0].get("country_code", None)
-    except Exception:
+        response.raise_for_status()
+    except httpx.TimeoutException:
         return None
+    except httpx.HTTPError:
+        return None
+
+    try:
+        data = response.json()
+    except ValueError:
+        return None
+
+    results = data.get("results")
+    if not results:
+        return None
+    return results[0].get("country_code", None)
