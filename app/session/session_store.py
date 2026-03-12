@@ -152,7 +152,6 @@ async def get_or_set(
         await redis.set(key, value, ex=ttl_seconds)
     except RedisError as exc:
         log.warning("Redis set failed in get_or_set [key=%s]: %s", key, exc)
-        pass
     return value
 
 
