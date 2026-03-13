@@ -4,6 +4,12 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
+ERROR_PREFIX = "ERROR: "
+
+
+def is_error_result(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith(ERROR_PREFIX)
+
 
 def retry(fn: Callable[[], Any], retries: int = 3, base_delay: float = 0.5):
     """
@@ -20,7 +26,7 @@ def retry(fn: Callable[[], Any], retries: int = 3, base_delay: float = 0.5):
         except Exception as e:
             attempt += 1
             if attempt > retries:
-                return f"ERROR: {str(e)}"
+                return f"{ERROR_PREFIX}{str(e)}"
             time.sleep(base_delay * (2 ** (attempt - 1)))
 
 

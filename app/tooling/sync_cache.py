@@ -8,6 +8,7 @@ import redis
 from redis.exceptions import RedisError
 
 from app.settings import settings
+from app.tooling.text_normalize import normalize_text
 
 CACHE_TTL_SECONDS_DEFAULT = 3600
 
@@ -40,10 +41,6 @@ def _get_sync_redis() -> Optional[redis.Redis]:
     except RedisError:
         _sync_redis = None
         return None
-
-
-def norm(s: str) -> str:
-    return (s or "").strip().lower()
 
 
 def cache_get_str(key: str) -> Optional[str]:

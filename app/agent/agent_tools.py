@@ -14,9 +14,9 @@ from app.tooling.sync_cache import (
     cache_get_str,
     cache_set_json,
     cache_set_str,
-    norm,
 )
-from app.tooling.retry_rate_limit import RateLimiter, retry
+from app.tooling.text_normalize import normalize_text
+from app.tooling.retry_rate_limit import RateLimiter, is_error_result, retry
 
 
 # -----------------------------
@@ -155,7 +155,7 @@ def _classify_risk_level(score: int) -> str:
 def weather_tool(place: str, horizon: Optional[str] = "today") -> str:
     """Get a concise weather summary for a specific place and time horizon."""
     hz = (horizon or "today").strip().lower()
-    cache_key = f"cache:tool:weather_line:{norm(place)}:{norm(hz)}"
+    cache_key = f"cache:tool:weather_line:{normalize_text(place)}:{normalize_text(hz)}"
     cached = cache_get_str(cache_key)
     if cached is not None:
         return cached
@@ -193,7 +193,7 @@ def weather_tool(place: str, horizon: Optional[str] = "today") -> str:
         return ", ".join(parts)
 
     out = retry(call)
-    if isinstance(out, str):
+    if isinstance(out, str) and not is_error_result(out):
         cache_set_str(cache_key, out, ttl=CACHE_TTL_SECONDS)
     return out
 
@@ -201,7 +201,7 @@ def weather_tool(place: str, horizon: Optional[str] = "today") -> str:
 @tool(args_schema=NewsInput)
 def news_tool(place: str) -> str:
     """Fetch recent news headlines for a specific city or region."""
-    cache_key = f"cache:tool:news_lines:{norm(place)}"
+    cache_key = f"cache:tool:news_lines:{normalize_text(place)}"
     cached = cache_get_str(cache_key)
     if cached is not None:
         return cached
@@ -223,7 +223,7 @@ def news_tool(place: str) -> str:
         )
 
     out = retry(call)
-    if isinstance(out, str):
+    if isinstance(out, str) and not is_error_result(out):
         cache_set_str(cache_key, out, ttl=CACHE_TTL_SECONDS)
     return out
 
@@ -238,8 +238,8 @@ def city_risk_tool(
     Assess city risk level (LOW, MEDIUM, HIGH) for outdoor activity and also consider travel conditions
     based on forecasted weather and recent local news.
     """
-    w_key = f"cache:tool:weather_summary:{norm(place)}:{norm(horizon)}"
-    n_key = f"cache:tool:news_items:{norm(place)}"
+    w_key = f"cache:tool:weather_summary:{normalize_text(place)}:{normalize_text(horizon)}"
+    n_key = f"cache:tool:news_items:{normalize_text(place)}"
 
     def _get_or_fetch_weather() -> Any:
         cached = cache_get_json(w_key)

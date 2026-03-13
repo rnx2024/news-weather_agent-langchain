@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
+import inspect
 from typing import Any, Awaitable, Callable, Dict, Iterable, Tuple
 
 from app.redis_client import redis
@@ -10,6 +11,11 @@ from app.session.session_keys import DEFAULT_SESSION_TTL, ONE_HOUR, news_key, se
 from redis.exceptions import RedisError
 
 log = logging.getLogger(__name__)
+
+
+async def _resolve_compute_value(compute_fn: Callable[[], Awaitable[str] | str]) -> str:
+    value = compute_fn()
+    return await value if inspect.isawaitable(value) else value
 
 
 async def get_session_state(session_id: str) -> Dict[str, Any]:
@@ -134,8 +140,7 @@ async def get_or_set(
     compute_fn: Callable[[], Awaitable[str] | str],
 ) -> str:
     if redis is None:
-        v = compute_fn()
-        return await v if hasattr(v, "__await__") else v  # type: ignore[misc]
+        return await _resolve_compute_value(compute_fn)
 
     try:
         cached = await redis.get(key)
@@ -143,11 +148,9 @@ async def get_or_set(
             return cached
     except RedisError as exc:
         log.warning("Redis get failed in get_or_set [key=%s]: %s", key, exc)
-        v = compute_fn()
-        return await v if hasattr(v, "__await__") else v  # type: ignore[misc]
+        return await _resolve_compute_value(compute_fn)
 
-    v = compute_fn()
-    value = await v if hasattr(v, "__await__") else v  # type: ignore[misc]
+    value = await _resolve_compute_value(compute_fn)
     try:
         await redis.set(key, value, ex=ttl_seconds)
     except RedisError as exc:
