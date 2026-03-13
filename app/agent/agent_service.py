@@ -10,6 +10,7 @@ from langgraph.prebuilt import create_react_agent
 from app.settings import settings
 from app.agent.agent_tools import weather_tool, news_tool, city_risk_tool
 from app.agent.agent_prompts import LOCAL_INTELLIGENCE_SYSTEM_PROMPT
+from app.travel_brief import build_travel_brief
 
 # session memory (Redis-backed)
 from app.session.session_cache import get_last_exchange, should_include, mark_tools_called
@@ -52,13 +53,13 @@ def _get_react_app(include_weather: bool, include_news: bool):
 def _build_user_prompt(place: str, question: Optional[str]) -> str:
     if not question:
         return (
-            "Provide a concise one-paragraph summary of the current weather and recent news "
-            f"for the location: {place}."
+            "Provide a concise travel brief for the destination below. Focus on travel conditions, likely disruptions, "
+            f"and what matters most for someone going there today: {place}."
         )
     return (
         f"Location: {place}\n"
         f"Question: {question}\n"
-        "Answer as ONE concise paragraph, plain text."
+        "Answer as ONE concise travel-oriented paragraph, plain text."
     )
 
 
@@ -160,8 +161,9 @@ async def run_agent(
 
     policy_lines.extend(
         [
-            "- Always produce a one-paragraph risk recommendation for the specified location.",
+            "- Always produce a one-paragraph travel brief for the specified location.",
             "- Use the city_risk_tool each turn to ground your answer on current weather/news signals.",
+            "- Explicitly frame the answer around travel conditions, likely disruptions, and practical planning impact.",
             "- Do NOT include explicit weather/news text in the final paragraph unless the user asked for it or a new update is available.",
             "- If the user asks about disruptions or 'where' they are, ground the answer using recent news: list up to 3 named places if present, otherwise say 'no specific locations reported'.",
             f"- If the user's question mentions a different place than '{place}', begin with: \"You asked about <other place> but your selected location is {place}. To get updates for <other place>, change the Location.\" Then provide the recommendation for {place} only.",
@@ -186,7 +188,14 @@ async def run_agent(
         agent_reply=final_text,
     )
 
-    result: Dict[str, Any] = {"final": final_text}
+    brief, _brief_err = build_travel_brief(place)
+    result: Dict[str, Any] = {
+        "place": place,
+        "final": final_text or brief["final"],
+        "risk_level": brief["risk_level"],
+        "travel_advice": brief["travel_advice"],
+        "sources": brief["sources"],
+    }
     if debug:
         result["debug"] = _build_debug(messages)
     return result

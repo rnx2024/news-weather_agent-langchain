@@ -5,8 +5,9 @@ from typing import Any, Optional
 from pydantic import BaseModel
 from langchain_core.tools import tool
 
-from app.weather.weather_service import get_weather_line, get_weather_summary, classify_weather_code
+from app.weather.weather_service import get_weather_line, get_weather_summary
 from app.news.news_service import get_news_items
+from app.travel_intelligence import classify_risk_level, score_news_risk, score_weather_risk
 
 from app.tooling.sync_cache import (
     CACHE_TTL_SECONDS_DEFAULT,
@@ -47,105 +48,6 @@ class RiskInput(BaseModel):
     place: str
     horizon: Optional[str] = "today"
     activity: Optional[str] = None
-
-
-# -----------------------------
-# Helpers to reduce cognitive complexity
-# -----------------------------
-def _score_weather_risk(summary: Any) -> tuple[int, list[str]]:
-    if not summary:
-        return 0, []
-
-    risk_score = 0
-    reasons: list[str] = []
-
-    cur = summary["current"]
-    day = summary["day"]
-
-    code = cur.get("weather_code")
-    cat = classify_weather_code(code)
-
-    cat_score: dict[str, tuple[int, str]] = {
-        "thunderstorm": (3, "thunderstorms expected"),
-        "heavy_rain": (2, "heavy rain expected"),
-        "rain": (1, "rain likely"),
-        "snow": (2, "snow or icy conditions"),
-        "fog": (1, "fog reducing visibility"),
-    }
-    if cat in cat_score:
-        s, r = cat_score[cat]
-        risk_score += s
-        reasons.append(r)
-
-    wind_max = day.get("wind_speed_max_kmh") or 0
-    if wind_max >= 70:
-        risk_score += 3
-        reasons.append(f"very strong winds (~{wind_max} km/h)")
-    elif wind_max >= 50:
-        risk_score += 2
-        reasons.append(f"strong winds (~{wind_max} km/h)")
-    elif wind_max >= 30:
-        risk_score += 1
-        reasons.append(f"gusty winds (~{wind_max} km/h)")
-
-    precip = day.get("precip_mm") or 0
-    if precip >= 30:
-        risk_score += 2
-        reasons.append(f"heavy precipitation (~{precip} mm)")
-    elif precip >= 5:
-        risk_score += 1
-        reasons.append(f"rainfall (~{precip} mm)")
-
-    tmax = day.get("tmax_c")
-    tmin = day.get("tmin_c")
-    if tmax is not None and tmax >= 35:
-        risk_score += 2
-        reasons.append(f"very hot (up to {tmax}°C)")
-    if tmin is not None and tmin <= -5:
-        risk_score += 2
-        reasons.append(f"very cold (down to {tmin}°C)")
-
-    return risk_score, reasons
-
-
-def _score_news_risk(place: str, headlines: Any) -> tuple[int, list[str]]:
-    if not headlines:
-        return 0, []
-
-    risk_score = 0
-    reasons: list[str] = []
-
-    place_l = (place or "").lower()
-    relevant_blobs: list[str] = []
-
-    for h in headlines or []:
-        blob = ((h.get("title") or "") + " " + (h.get("snippet") or "")).lower()
-        if place_l in blob:
-            relevant_blobs.append(blob)
-
-    titles = " ".join(relevant_blobs)
-    if not titles:
-        return 0, []
-
-    severe = ("flood", "landslide", "evacuation", "emergency")
-    disruption = ("protest", "strike", "closure", "outage", "traffic")
-
-    if any(k in titles for k in severe):
-        risk_score += 3
-        reasons.append("severe local incident reported")
-    elif any(k in titles for k in disruption):
-        risk_score += 2
-        reasons.append("local disruption reported")
-
-    return risk_score, reasons
-
-
-def _classify_risk_level(score: int) -> str:
-    if score >= 5:
-        return "HIGH"
-    if score >= 2:
-        return "MEDIUM"
-    return "LOW"
 
 
 # -----------------------------
@@ -279,15 +181,15 @@ def city_risk_tool(
         risk_score = 0
         reasons: list[str] = []
 
-        w_score, w_reasons = _score_weather_risk(summary)
+        w_score, w_reasons = score_weather_risk(summary)
         risk_score += w_score
         reasons.extend(w_reasons)
 
-        n_score, n_reasons = _score_news_risk(place, headlines)
+        n_score, n_reasons = score_news_risk(place, headlines)
         risk_score += n_score
         reasons.extend(n_reasons)
 
-        level = _classify_risk_level(risk_score)
+        level = classify_risk_level(risk_score, uppercase=True)
         return _build_message(level, reasons)
 
     return retry(call)

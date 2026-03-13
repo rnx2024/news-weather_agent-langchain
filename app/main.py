@@ -14,6 +14,7 @@ from app.redis_client import init_redis, close_redis
 
 app = FastAPI(
     title="TripBites API",
+    description="Travel intelligence backend for destination briefs, local conditions, and disruption-aware city updates.",
     version="0.2.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -59,5 +60,6 @@ async def root():
     return {
         "name": "TripBites API",
         "status": "ok",
+        "service": "travel-intelligence",
         "docs": "/docs",
     }

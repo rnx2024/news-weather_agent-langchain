@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Header, Depends, Request
 from pydantic import BaseModel
 
 from app.agent.agent_service import run_agent
+from app.travel_brief import build_travel_brief
 from app.weather.weather_service import get_weather_line
 from app.news.news_service import get_news_items
 from app.settings import settings
@@ -29,7 +30,38 @@ class AgentRequest(BaseModel):
 
 
 class AgentResponse(BaseModel):
+    place: str
     final: str
+    risk_level: str
+    travel_advice: list[str]
+    sources: list["TravelBriefSourceResponse"]
+
+
+class TravelBriefSourceResponse(BaseModel):
+    type: str
+
+
+class TravelBriefResponse(BaseModel):
+    place: str
+    final: str
+    risk_level: str
+    travel_advice: list[str]
+    sources: list[TravelBriefSourceResponse]
+
+
+class WeatherResponse(BaseModel):
+    place: str
+    summary: str
+    travel_relevance: str
+    travel_advice: list[str]
+
+
+class NewsResponse(BaseModel):
+    place: str
+    recent_count: int
+    items: list[dict[str, Any]]
+    travel_relevance: str
+    note: str
 
 
 @router.get("/health")
@@ -67,6 +99,23 @@ async def agent_endpoint(
 
 
 @router.get(
+    "/travel-brief",
+    tags=["travel"],
+    dependencies=[Depends(require_api_key)],
+    responses={502: {"description": "Travel brief generation failed"}},
+)
+@limiter.limit("15/minute")
+async def travel_brief_endpoint(
+    request: Request,
+    place: Annotated[str, Query(..., description="City or destination name")],
+) -> TravelBriefResponse:
+    brief, err = build_travel_brief(place)
+    if err and not brief["sources"]:
+        raise HTTPException(status_code=502, detail=err)
+    return TravelBriefResponse(**brief)
+
+
+@router.get(
     "/weather",
     tags=["weather"],
     dependencies=[Depends(require_api_key)],
@@ -76,11 +125,16 @@ async def agent_endpoint(
 async def weather_endpoint(
     request: Request,
     place: Annotated[str, Query(..., description="City or place name")],
-) -> Dict[str, str]:
+) -> WeatherResponse:
     line, err = get_weather_line(place)
     if err:
         raise HTTPException(status_code=502, detail=err)
-    return {"place": place, "summary": line}
+    return WeatherResponse(
+        place=place,
+        summary=line,
+        travel_relevance="Use this as a quick weather check before outdoor plans, transfers, or day trips.",
+        travel_advice=["Check the latest forecast again before departure if conditions look unstable"],
+    )
 
 
 @router.get(
@@ -93,14 +147,18 @@ async def weather_endpoint(
 async def news_endpoint(
     request: Request,
     place: Annotated[str, Query(..., description="City or topic for news search")],
-) -> Dict[str, Any]:
+) -> NewsResponse:
     headlines, err = get_news_items(place)
     if err:
         raise HTTPException(status_code=502, detail="News retrieval failed")
 
-    return {
-        "place": place,
-        "recent_count": len(headlines),
-        "items": headlines,
-        "note": "Showing only top 3 headlines from last 7 days",
-    }
+    return NewsResponse(
+        place=place,
+        recent_count=len(headlines),
+        items=headlines,
+        travel_relevance=(
+            "Recent items are intended to help spot disruptions, closures, safety issues, transport impacts, "
+            "or major local developments that could affect travelers."
+        ),
+        note="Showing up to 3 recent local items from the last 7 days.",
+    )
