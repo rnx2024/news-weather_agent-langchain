@@ -1,12 +1,14 @@
 # app/agent_tools.py (UPDATED: delegates helpers; public tool names/signatures unchanged)
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 from pydantic import BaseModel
 from langchain_core.tools import tool
 
 from app.weather.weather_service import get_weather_line, get_weather_summary
 from app.news.news_service import get_news_items
+from app.travel_brief import build_travel_brief
 from app.travel_intelligence import classify_risk_level, score_news_risk, score_weather_risk
 
 from app.tooling.sync_cache import (
@@ -50,9 +52,36 @@ class RiskInput(BaseModel):
     activity: Optional[str] = None
 
 
+class TravelBriefInput(BaseModel):
+    place: str
+
+
 # -----------------------------
 # Tools
 # -----------------------------
+@tool(args_schema=TravelBriefInput)
+def travel_brief_tool(place: str) -> str:
+    """Build a structured travel brief for a destination using current weather and local news signals."""
+    cache_key = f"cache:tool:travel_brief:{normalize_text(place)}"
+    cached = cache_get_str(cache_key)
+    if cached is not None:
+        return cached
+
+    weather_rate.acquire()
+    news_rate.acquire()
+
+    def call() -> str:
+        brief, err = build_travel_brief(place)
+        if err and not brief["sources"]:
+            raise RuntimeError(err)
+        return json.dumps(brief)
+
+    out = retry(call)
+    if isinstance(out, str) and not is_error_result(out):
+        cache_set_str(cache_key, out, ttl=CACHE_TTL_SECONDS)
+    return out
+
+
 @tool(args_schema=WeatherInput)
 def weather_tool(place: str, horizon: Optional[str] = "today") -> str:
     """Get a concise weather summary for a specific place and time horizon."""

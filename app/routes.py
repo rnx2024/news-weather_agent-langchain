@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, Dict, Optional
+from typing import Annotated, Optional, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Header, Depends, Request
 from pydantic import BaseModel
@@ -15,6 +15,8 @@ from app.tooling.ratelimit import limiter
 
 
 router = APIRouter()
+RiskLevel = Literal["low", "medium", "high"]
+SourceType = Literal["weather", "news"]
 
 
 def require_api_key(
@@ -29,22 +31,30 @@ class AgentRequest(BaseModel):
     question: Optional[str] = None
 
 
+class TravelBriefSourceResponse(BaseModel):
+    type: SourceType
+
+
+class NewsItemResponse(BaseModel):
+    title: str
+    source: str | None = None
+    date: str | None = None
+    link: str | None = None
+    snippet: str | None = None
+
+
 class AgentResponse(BaseModel):
     place: str
     final: str
-    risk_level: str
+    risk_level: RiskLevel
     travel_advice: list[str]
-    sources: list["TravelBriefSourceResponse"]
-
-
-class TravelBriefSourceResponse(BaseModel):
-    type: str
+    sources: list[TravelBriefSourceResponse]
 
 
 class TravelBriefResponse(BaseModel):
     place: str
     final: str
-    risk_level: str
+    risk_level: RiskLevel
     travel_advice: list[str]
     sources: list[TravelBriefSourceResponse]
 
@@ -59,20 +69,20 @@ class WeatherResponse(BaseModel):
 class NewsResponse(BaseModel):
     place: str
     recent_count: int
-    items: list[dict[str, Any]]
+    items: list[NewsItemResponse]
     travel_relevance: str
     note: str
 
 
 @router.get("/health")
 @limiter.limit("30/minute")
-async def health(request: Request) -> Dict[str, str]:
+async def health(request: Request) -> dict[str, str]:
     return {"status": "ok"}
 
 
 @router.post("/session", tags=["session"], dependencies=[Depends(require_api_key)])
 @limiter.limit("30/minute")
-async def create_session(request: Request) -> Dict[str, str]:
+async def create_session(request: Request) -> dict[str, str]:
     from uuid import uuid4
 
     session_id = str(uuid4())

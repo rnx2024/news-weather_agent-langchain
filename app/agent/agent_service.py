@@ -1,16 +1,16 @@
 # app/agent_service.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set, Tuple
+import json
+from typing import Any, Dict, List, Optional, Set, Tuple, cast
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, AIMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
 from app.settings import settings
-from app.agent.agent_tools import weather_tool, news_tool, city_risk_tool
+from app.agent.agent_tools import weather_tool, news_tool, city_risk_tool, travel_brief_tool
 from app.agent.agent_prompts import LOCAL_INTELLIGENCE_SYSTEM_PROMPT
-from app.travel_brief import build_travel_brief
 
 # session memory (Redis-backed)
 from app.session.session_cache import get_last_exchange, should_include, mark_tools_called
@@ -39,7 +39,7 @@ def _get_react_app(include_weather: bool, include_news: bool):
     if app is not None:
         return app
 
-    gated = [city_risk_tool]  # always available (forces grounding)
+    gated = [travel_brief_tool, city_risk_tool]
     if include_weather:
         gated.append(weather_tool)
     if include_news:
@@ -116,6 +116,64 @@ def _extract_called_tools(messages: List[BaseMessage]) -> Set[str]:
     return called
 
 
+def _extract_tool_outputs(messages: List[BaseMessage]) -> Dict[str, str]:
+    tool_names_by_call_id: Dict[str, str] = {}
+    outputs: Dict[str, str] = {}
+
+    for msg in messages:
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            for tc in msg.tool_calls:
+                call_id = tc.get("id")
+                name = tc.get("name")
+                if isinstance(call_id, str) and isinstance(name, str):
+                    tool_names_by_call_id[call_id] = name
+
+    for msg in messages:
+        if not isinstance(msg, ToolMessage):
+            continue
+        call_id = getattr(msg, "tool_call_id", None)
+        if not isinstance(call_id, str):
+            continue
+        tool_name = tool_names_by_call_id.get(call_id)
+        if tool_name:
+            outputs[tool_name] = str(msg.content)
+
+    return outputs
+
+
+def _extract_structured_brief(messages: List[BaseMessage], place: str) -> Dict[str, Any]:
+    tool_outputs = _extract_tool_outputs(messages)
+    raw_brief = tool_outputs.get("travel_brief_tool")
+    if raw_brief:
+        try:
+            payload = json.loads(raw_brief)
+            if isinstance(payload, dict):
+                return payload
+        except json.JSONDecodeError:
+            pass
+
+    risk_output = tool_outputs.get("city_risk_tool", "")
+    risk_level = "low"
+    if "Risk level: HIGH" in risk_output:
+        risk_level = "high"
+    elif "Risk level: MEDIUM" in risk_output:
+        risk_level = "medium"
+
+    sources: list[dict[str, str]] = []
+    if "travel_brief_tool" in tool_outputs or "weather_tool" in tool_outputs:
+        sources.append({"type": "weather"})
+    if "travel_brief_tool" in tool_outputs or "news_tool" in tool_outputs:
+        sources.append({"type": "news"})
+
+    return {
+        "place": place,
+        "final": "",
+        "risk_level": risk_level,
+        "travel_advice": [],
+        "sources": sources,
+    }
+
+
 # -----------------------------------------------------
 # Public function: run_agent
 # -----------------------------------------------------
@@ -162,7 +220,9 @@ async def run_agent(
     policy_lines.extend(
         [
             "- Always produce a one-paragraph travel brief for the specified location.",
-            "- Use the city_risk_tool each turn to ground your answer on current weather/news signals.",
+            "- You MUST call travel_brief_tool exactly once before writing the final answer.",
+            "- Use the travel_brief_tool result as the primary source for risk level, travel advice, and supporting travel context.",
+            "- Use the city_risk_tool only when the user explicitly asks about safety level, risk, or go/no-go judgment.",
             "- Explicitly frame the answer around travel conditions, likely disruptions, and practical planning impact.",
             "- Do NOT include explicit weather/news text in the final paragraph unless the user asked for it or a new update is available.",
             "- If the user asks about disruptions or 'where' they are, ground the answer using recent news: list up to 3 named places if present, otherwise say 'no specific locations reported'.",
@@ -188,13 +248,13 @@ async def run_agent(
         agent_reply=final_text,
     )
 
-    brief, _brief_err = build_travel_brief(place)
+    brief = _extract_structured_brief(messages, place)
     result: Dict[str, Any] = {
-        "place": place,
-        "final": final_text or brief["final"],
-        "risk_level": brief["risk_level"],
-        "travel_advice": brief["travel_advice"],
-        "sources": brief["sources"],
+        "place": str(brief.get("place") or place),
+        "final": final_text or str(brief.get("final") or ""),
+        "risk_level": str(brief.get("risk_level") or "low"),
+        "travel_advice": cast(list[str], brief.get("travel_advice") or []),
+        "sources": cast(list[dict[str, str]], brief.get("sources") or []),
     }
     if debug:
         result["debug"] = _build_debug(messages)
