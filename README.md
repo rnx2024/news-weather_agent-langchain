@@ -1,108 +1,100 @@
 # TripBites Backend
 
-FastAPI backend for the current TripBites app.
+TripBites is a travel intelligence API for destination briefs, local condition awareness, and disruption-aware city updates.
 
-This service powers a city-based assistant that combines weather data, recent news, and AI-generated responses into a single backend API. It is currently designed around chat, weather, and news retrieval, with a LangGraph ReAct agent orchestrating tool usage and summary generation. :contentReference[oaicite:0]{index=0}
+The backend combines:
+- weather signals for near-term travel planning
+- recent local news for disruptions, closures, safety issues, and major developments
+- a LangGraph-powered assistant that turns those inputs into concise travel-facing summaries
 
-A separate frontend can call this backend for:
-- conversational city insights
-- weather summaries
-- recent local news
+## What The API Does
 
-## Current Scope
+The current backend is designed to help a frontend answer questions like:
+- Is this destination generally fine for travel today?
+- What weather conditions could affect outdoor plans or transfers?
+- Are there recent disruptions, closures, strikes, protests, or safety-related developments?
+- What short travel advice should a user see before heading out?
 
-The backend currently provides:
-- a FastAPI API service
-- a LangGraph ReAct agent for `/chat`
-- weather retrieval and summarization
-- news retrieval and filtering
-- API key protection on endpoints
-- retry and rate-limiting support in the tool layer :contentReference[oaicite:1]{index=1}
+This is not a full itinerary planner. It is a destination intelligence layer that summarizes what matters most right now.
 
-This README reflects the backend as it is currently designed. It does not describe future TripBites travel features yet.
-
-## Main Features
-
-### 1. Weather intelligence
-
-The backend uses weather providers to collect forecast and weather-condition data, then converts that into a concise human-readable summary. The current design includes automatic geocoding fallback and hazard-style classification such as heavy rain, thunderstorm, and extreme heat. :contentReference[oaicite:2]{index=2}
-
-### 2. News retrieval
-
-The backend fetches recent news through SerpAPI using Google News, filters results to the last 7 days, and returns the top recent headlines for a city or place. It also supports country-aware localization. :contentReference[oaicite:3]{index=3}
-
-### 3. LangGraph agent orchestration
-
-The `/chat` flow is powered by a LangGraph ReAct agent. The agent decides when to call tools such as weather, news, and city-risk logic, then produces a final natural-language response. Debug mode can expose tool calls, arguments, and observations. :contentReference[oaicite:4]{index=4}
-
-### 4. Backend safeguards
-
-The current implementation includes token-bucket rate limiting, automatic retries with exponential backoff, and structured tools defined with Pydantic schemas. :contentReference[oaicite:5]{index=5}
-
-### 5. Secure API access
-
-All endpoints currently require an API key through the `x-api-key` header. :contentReference[oaicite:6]{index=6}
-
-## API Endpoints
-
-### `GET /health`
-Simple health check endpoint.
+## Main Endpoints
 
 ### `POST /chat`
-Main agent endpoint. Accepts a user query and returns an AI-generated response based on available weather and news context.
+
+Returns a travel-oriented destination brief for the selected place. The response includes:
+- `place`
+- `final`
+- `risk_level`
+- `travel_advice`
+- `sources`
+
+Example shape:
+
+```json
+{
+  "place": "Cebu",
+  "final": "Cebu looks generally fine for travel today. Expect warm conditions with some rain-related delays possible. No major recent local disruptions were identified from the current news scan.",
+  "risk_level": "low",
+  "travel_advice": [
+    "Carry light rain protection",
+    "Keep an eye on live traffic or terminal updates as plans develop"
+  ],
+  "sources": [
+    {"type": "weather"},
+    {"type": "news"}
+  ]
+}
+```
 
 ### `GET /weather`
-Returns a concise weather summary for a requested place.
+
+Returns a concise weather summary plus travel relevance guidance. The endpoint is intended as a quick check before outdoor plans, transfers, or day trips.
 
 ### `GET /news`
-Returns filtered recent news for a requested place. Current behavior is limited to recent headlines within the last 7 days, with up to the top 3 recent items. :contentReference[oaicite:7]{index=7}
 
-## Architecture Summary
+Returns recent local items with travel-focused framing. The intent is to surface disruptions, closures, transport impacts, safety issues, events, and other major developments that may affect travelers.
 
-Current backend flow:
+### `GET /travel-brief`
 
-1. The client sends a request to the backend.
-2. For chat requests, the LangGraph agent evaluates the query.
-3. The agent decides whether to call weather, news, or city-risk tools.
-4. Tool outputs are combined into a final concise response.
-5. Dedicated weather and news endpoints are also available for direct frontend use. :contentReference[oaicite:8]{index=8}
+Optional product-facing endpoint for frontend consumers that want a single structured travel brief without going through chat.
 
-## Tech Stack
+### `GET /health`
 
-- FastAPI
-- LangGraph
-- Pydantic
-- SerpAPI
-- Open-Meteo
-- OpenWeather
-- Python
-- Docker support in the repository :contentReference[oaicite:9]{index=9}
+Basic service health check.
 
-## Project Purpose
+## Backend Behavior
 
-This backend is currently best described as a city insight service that combines:
-- weather context
-- recent news context
-- AI-generated natural-language summaries
+The backend keeps the original route structure for compatibility, but the business semantics are travel-first:
+- `/chat` produces a destination travel brief rather than a generic city summary
+- `/weather` emphasizes planning impact for movement and outdoor activities
+- `/news` emphasizes local developments relevant to traveler decisions
+- `/travel-brief` exposes the same product framing in a simpler read-model
 
-It is the backend companion for the current TripBites frontend, even though the backend itself is still functionally centered on weather, news, and chat. That matches the present implementation more accurately than describing it as a full travel-planning system. :contentReference[oaicite:10]{index=10}
+## Architecture
 
-## Environment Notes
+Core pieces:
+- FastAPI for the API surface
+- LangGraph for the `/chat` assistant
+- Open-Meteo and OpenWeather for weather data
+- SerpAPI Google News for recent local reporting
+- Redis-backed session and cache helpers
+- rate limiting and retry helpers around outbound provider calls
 
-The repository includes a `Dockerfile`, `pyproject.toml`, and `uv.lock`, which indicates support for containerized setup and Python dependency management through the project configuration. :contentReference[oaicite:11]{index=11}
+## Security And Access
 
-Document the actual environment variables used by your codebase in this section, for example:
-- API keys
-- model provider keys
-- weather provider keys
-- SerpAPI key
-- allowed frontend origin
-- rate-limit settings
+Protected endpoints require `x-api-key`.
+
+Session-aware chat requests also use the signed TripBites session flow exposed through `POST /session`.
 
 ## Local Development
-
-Example development flow:
 
 ```bash
 uv sync
 uvicorn app.main:app --reload
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000/docs
+```
