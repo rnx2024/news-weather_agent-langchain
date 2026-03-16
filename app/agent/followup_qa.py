@@ -4,75 +4,41 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
-from app.agent.agent_prompts import FOLLOWUP_ACTION_SYSTEM_PROMPT, FOLLOWUP_QA_SYSTEM_PROMPT, JOURNEY_QA_SYSTEM_PROMPT
+from app.agent.agent_prompts import (
+    FOLLOWUP_ACTION_SYSTEM_PROMPT,
+    FOLLOWUP_QA_SYSTEM_PROMPT,
+    JOURNEY_ACTION_SYSTEM_PROMPT,
+    JOURNEY_QA_SYSTEM_PROMPT,
+)
 from app.news.news_service import get_news_items, search_news
 from app.travel_brief import build_travel_brief
 from app.weather.weather_service import get_weather_line, get_weather_summary
 
-_FOLLOWUP_STOPWORDS = {
-    "about",
-    "after",
-    "also",
-    "and",
-    "any",
-    "are",
-    "campaign",
-    "city",
-    "does",
-    "going",
-    "have",
-    "into",
-    "just",
-    "know",
-    "last",
-    "local",
-    "news",
-    "question",
-    "recent",
-    "reported",
-    "risk",
-    "saturday",
-    "should",
-    "still",
-    "that",
-    "there",
-    "this",
-    "until",
-    "visit",
-    "what",
-    "when",
-    "where",
-    "will",
-    "with",
-}
 
-
-def _tokenize_for_followup(text: str) -> set[str]:
-    return {
-        token
-        for token in re.findall(r"[a-z]{4,}", (text or "").lower())
-        if token not in _FOLLOWUP_STOPWORDS
-    }
+def _extract_text_tokens(text: str) -> set[str]:
+    return {token for token in re.findall(r"[a-z0-9]{4,}", (text or "").lower())}
 
 
 def _match_news_item(question: str, last_reply: Optional[str], items: List[Dict[str, Any]]) -> Dict[str, Any] | None:
     if not items:
         return None
 
-    q_tokens = _tokenize_for_followup(question)
-    last_tokens = _tokenize_for_followup(last_reply or "")
-    best_item: Dict[str, Any] | None = None
+    reference_text = " ".join(
+        part for part in (question or "", last_reply or "") if part and part.strip()
+    ).strip()
+    reference_tokens = _extract_text_tokens(reference_text)
+    if not reference_tokens:
+        return items[0]
+
+    best_item = items[0]
     best_score = -1
-
     for item in items:
-        blob = f"{item.get('title') or ''} {item.get('snippet') or ''}".lower()
-        item_tokens = _tokenize_for_followup(blob)
-        score = len(q_tokens & item_tokens) * 3 + len(last_tokens & item_tokens)
+        item_tokens = _extract_text_tokens(_news_text(item))
+        score = len(reference_tokens & item_tokens)
         if score > best_score:
-            best_score = score
             best_item = item
-
-    return best_item or items[0]
+            best_score = score
+    return best_item
 
 
 def _news_text(item: Dict[str, Any] | None) -> str:
@@ -137,6 +103,26 @@ async def _plan_followup_action(llm: Any, *, place: str, question: str, evidence
     raw = await _invoke_reasoner(
         llm,
         FOLLOWUP_ACTION_SYSTEM_PROMPT,
+        place=place,
+        question=question,
+        evidence=evidence,
+    )
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {"answered": False, "answer": "", "search_query": ""}
+
+    return {
+        "answered": bool(parsed.get("answered")),
+        "answer": str(parsed.get("answer") or "").strip(),
+        "search_query": str(parsed.get("search_query") or "").strip(),
+    }
+
+
+async def _plan_journey_action(llm: Any, *, place: str, question: str, evidence: Dict[str, Any]) -> Dict[str, Any]:
+    raw = await _invoke_reasoner(
+        llm,
+        JOURNEY_ACTION_SYSTEM_PROMPT,
         place=place,
         question=question,
         evidence=evidence,
@@ -238,24 +224,18 @@ def _condense_direct_answer(final: str) -> str:
     return parts[0].strip()
 
 
-def _build_news_targeted_query(place: str, question: str, item: Dict[str, Any] | None, last_reply: Optional[str]) -> str:
-    question_terms = re.findall(r"[A-Za-z0-9][A-Za-z0-9'.-]*", question or "")
-    filtered_terms = [
-        term
-        for term in question_terms
-        if term.lower() not in _FOLLOWUP_STOPWORDS and len(term) > 2
-    ]
-    if filtered_terms:
-        return f"{' '.join(filtered_terms[:10])} {place}".strip()
+def _normalize_search_query(query: str, *extras: str) -> str:
+    parts = [" ".join((query or "").split())]
+    parts.extend(" ".join((extra or "").split()) for extra in extras if extra and extra.strip())
+    return " ".join(part for part in parts if part).strip()
 
+
+def _build_news_targeted_query(place: str, question: str, item: Dict[str, Any] | None, _last_reply: Optional[str]) -> str:
+    if question and question.strip():
+        return _normalize_search_query(question, place)
     if item and item.get("title"):
-        return f"{item['title']} {place}"
-
-    tokens = list(_tokenize_for_followup(question))
-    if not tokens and last_reply:
-        tokens = list(_tokenize_for_followup(last_reply))
-    query_core = " ".join(tokens[:6]).strip()
-    return f"{query_core} {place}".strip() or place
+        return _normalize_search_query(str(item["title"]), place)
+    return place
 
 
 def _extract_best_news_link(evidence: Dict[str, Any]) -> str | None:
@@ -312,25 +292,8 @@ def _append_followup_link_if_needed(final: str, evidence: Dict[str, Any], origin
     return f"{final}{separator} Source: {link}"
 
 
-def _build_journey_targeted_query(origin: str, destination: str, question: str, route_or_transport: bool) -> str:
-    if route_or_transport:
-        question_terms = re.findall(r"[A-Za-z0-9][A-Za-z0-9'.-]*", question or "")
-        filtered_terms = [
-            term
-            for term in question_terms
-            if term.lower() not in _FOLLOWUP_STOPWORDS and len(term) > 2
-        ]
-        if filtered_terms:
-            return f"{' '.join(filtered_terms[:10])} {origin} {destination}".strip()
-        return f"{origin} {destination} transport route travel"
-
-    lowered = (question or "").lower()
-    if any(term in lowered for term in ("continue", "delay", "closure", "disruption", "strike", "cancel", "postpone")):
-        return f"{origin} {destination} travel disruption closure"
-
-    tokens = list(_tokenize_for_followup(question))
-    core = " ".join(tokens[:6]).strip()
-    return f"{core} {origin} {destination}".strip()
+def _build_journey_targeted_query(origin: str, destination: str, question: str, pending_question: Optional[str]) -> str:
+    return _normalize_search_query(pending_question or question, origin, destination)
 
 
 def _detect_weather_horizon(question: str) -> str:
@@ -350,30 +313,48 @@ async def answer_journey_question(
     origin: str,
     *,
     route_or_transport: bool,
+    latest_user_message: str = "",
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+    pending_question: Optional[str] = None,
 ) -> Dict[str, Any]:
     destination_evidence = _gather_place_evidence(place)
     origin_evidence = _gather_place_evidence(origin)
 
-    targeted_query = _build_journey_targeted_query(origin, place, question, route_or_transport)
-    targeted_news_items, targeted_err = search_news(targeted_query, place)
-
-    evidence = {
+    current_evidence = {
         "mode": "journey_planning",
         "question": question,
+        "latest_user_message": latest_user_message or question,
+        "pending_question": pending_question,
+        "conversation_history": conversation_history or [],
         "origin": origin,
         "destination": place,
         "route_or_transport": route_or_transport,
         "destination_evidence": destination_evidence,
         "origin_evidence": origin_evidence,
-        "targeted_search_query": targeted_query,
-        "targeted_search_error": targeted_err or None,
-        "targeted_news_items": targeted_news_items[:3],
+        "targeted_search_query": None,
+        "targeted_search_error": None,
+        "targeted_news_items": [],
         "limitations": [
             "No dedicated routing engine or live transport schedule data is available in this workflow."
         ],
     }
-    final = await _run_journey_reasoner(llm, place=place, question=question, evidence=evidence)
-    raw_final = final
+    plan = await _plan_journey_action(llm, place=place, question=question, evidence=current_evidence)
+    if plan["answered"] and plan["answer"]:
+        final = plan["answer"]
+        raw_final = final
+        evidence = current_evidence
+    else:
+        targeted_query = plan["search_query"] or _build_journey_targeted_query(origin, place, question, pending_question)
+        targeted_news_items, targeted_err = search_news(targeted_query, place)
+        evidence = {
+            **current_evidence,
+            "targeted_search_query": targeted_query,
+            "targeted_search_error": targeted_err or None,
+            "targeted_news_items": targeted_news_items[:3],
+        }
+        final = await _run_journey_reasoner(llm, place=place, question=question, evidence=evidence)
+        raw_final = final
+
     if not final:
         if route_or_transport:
             final = "I couldn't find a confirmed answer about the best transport from the data I gathered so far."
@@ -387,7 +368,14 @@ async def answer_journey_question(
     return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": sources}
 
 
-async def answer_news_followup(llm: Any, place: str, question: str, last_reply: Optional[str]) -> Dict[str, Any]:
+async def answer_news_followup(
+    llm: Any,
+    place: str,
+    question: str,
+    last_reply: Optional[str],
+    *,
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
     items, err = get_news_items(place)
     if err:
         final = f"I could not retrieve current news for {place} right now."
@@ -397,6 +385,7 @@ async def answer_news_followup(llm: Any, place: str, question: str, last_reply: 
     current_evidence = {
         "mode": "news_followup",
         "question": question,
+        "conversation_history": conversation_history or [],
         "current_news_items": items[:3],
         "matched_current_item": matched_item,
         "used_targeted_search": False,
@@ -434,7 +423,13 @@ async def answer_news_followup(llm: Any, place: str, question: str, last_reply: 
     return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": [{"type": "news"}]}
 
 
-async def answer_weather_followup(llm: Any, place: str, question: str) -> Dict[str, Any]:
+async def answer_weather_followup(
+    llm: Any,
+    place: str,
+    question: str,
+    *,
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
     horizon = _detect_weather_horizon(question)
     summary, err = get_weather_summary(place, horizon)
     sources = [{"type": "weather"}]
@@ -445,6 +440,7 @@ async def answer_weather_followup(llm: Any, place: str, question: str) -> Dict[s
             evidence = {
                 "mode": "weather_followup",
                 "question": question,
+                "conversation_history": conversation_history or [],
                 "requested_horizon": horizon,
                 "weather_snapshot": line,
                 "weather_summary": None,
@@ -463,6 +459,7 @@ async def answer_weather_followup(llm: Any, place: str, question: str) -> Dict[s
     evidence = {
         "mode": "weather_followup",
         "question": question,
+        "conversation_history": conversation_history or [],
         "requested_horizon": horizon,
         "weather_summary": summary,
         "weather_snapshot": None,
