@@ -377,7 +377,7 @@ async def run_agent(
     effective_question = question
     origin = extract_origin(question, last_reply)
     pending_question = (pending_agent_context or {}).get("question")
-    same_destination_session = bool(question and active_destination == place and recent_turns)
+    same_destination_followup = bool(question and active_destination == place and recent_turns)
 
     awaiting_origin = (pending_agent_context or {}).get("awaiting") == "origin"
     if awaiting_origin:
@@ -457,7 +457,14 @@ async def run_agent(
             result["debug"] = []
         return result
 
-    if same_destination_session and answer_mode == "travel_brief":
+    # Hard lock: once a destination is already active in this session,
+    # all same-destination follow-ups must stay inside QA flows.
+    # Do not allow fallback into the broad ReAct travel-brief path.
+    if same_destination_followup and answer_mode not in {
+        "news_followup",
+        "weather_followup",
+        "journey_planning",
+    }:
         result = await _answer_general_followup(
             _llm,
             place,
