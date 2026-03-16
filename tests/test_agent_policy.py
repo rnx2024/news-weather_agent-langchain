@@ -1,6 +1,6 @@
 import unittest
 
-from app.agent.agent_policy import classify_answer_mode
+from app.agent.agent_policy import classify_answer_mode, extract_origin
 
 
 class AgentPolicyTests(unittest.TestCase):
@@ -30,6 +30,14 @@ class AgentPolicyTests(unittest.TestCase):
     def test_classify_origin_reply_after_clarification(self) -> None:
         mode = classify_answer_mode("From Manila", "Where are you traveling from?")
         self.assertEqual(mode, "journey_planning")
+
+    def test_classify_bare_origin_reply_after_clarification(self) -> None:
+        mode = classify_answer_mode("Ilocos Sur", "Where are you traveling from?")
+        self.assertEqual(mode, "journey_planning")
+
+    def test_extract_origin_from_bare_reply_after_clarification(self) -> None:
+        origin = extract_origin("Ilocos Sur", "Where are you traveling from?")
+        self.assertEqual(origin, "Ilocos Sur")
 
     def test_classify_news_duration_followup_from_last_reply(self) -> None:
         mode = classify_answer_mode(

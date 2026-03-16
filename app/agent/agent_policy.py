@@ -278,7 +278,7 @@ def classify_answer_mode(question: Optional[str], last_reply: Optional[str] = No
     q = question.lower()
     last = (last_reply or "").lower()
 
-    if _has_any_term(last, _ORIGIN_QUESTION_TERMS) and extract_origin(question):
+    if _has_any_term(last, _ORIGIN_QUESTION_TERMS) and extract_origin(question, last_reply):
         return "journey_planning"
 
     if is_journey_planning_question(question):
@@ -336,10 +336,10 @@ def needs_origin_clarification(question: Optional[str], last_reply: Optional[str
     last = (last_reply or "").lower()
     if not is_journey_planning_question(question) and not _has_any_term(last, _ORIGIN_QUESTION_TERMS):
         return False
-    return extract_origin(question) is None
+    return extract_origin(question, last_reply) is None
 
 
-def extract_origin(question: Optional[str]) -> str | None:
+def extract_origin(question: Optional[str], last_reply: Optional[str] = None) -> str | None:
     if not question:
         return None
 
@@ -364,6 +364,9 @@ def extract_origin(question: Optional[str]) -> str | None:
         if origin:
             return origin
 
+    if _has_any_term((last_reply or "").lower(), _ORIGIN_QUESTION_TERMS) and _looks_like_location_reply(q):
+        return _clean_location_fragment(q)
+
     return None
 
 
@@ -371,6 +374,17 @@ def _clean_location_fragment(fragment: str) -> str | None:
     cleaned = re.split(r"[?.!,;]| by | via | using ", fragment, maxsplit=1, flags=re.IGNORECASE)[0].strip()
     cleaned = re.sub(r"^(the)\s+", "", cleaned, flags=re.IGNORECASE).strip()
     return cleaned or None
+
+
+def _looks_like_location_reply(text: str) -> bool:
+    compact = " ".join((text or "").split())
+    if not compact or "?" in compact:
+        return False
+    if len(compact.split()) > 5:
+        return False
+    if re.search(r"\b(bus|car|drive|flight|ferry|route|transport|transpo|weather|news|risk|safe|should|can|what|when|why|how)\b", compact, flags=re.IGNORECASE):
+        return False
+    return bool(re.fullmatch(r"[A-Za-z][A-Za-z .'-]*", compact))
 
 
 def _token_overlap(a: str, b: str) -> set[str]:
