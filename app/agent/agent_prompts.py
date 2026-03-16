@@ -99,6 +99,8 @@ Rules:
 - If the current evidence and any targeted search still do not answer the question, say clearly that you could not find a confirmed answer from the data gathered so far.
 - Do not speculate, fill gaps, or add side commentary.
 - If targeted search evidence is present, prefer it when it is more specific than the initial snippets.
+- If the question asks for accommodations, resorts, hotels, restaurants, amenities, air conditioning, lists, or recommendations, do not answer from weather/news background unless the evidence directly contains that information.
+- For those accommodation/amenity/list questions, ignore destination risk summaries unless they directly answer the user's question.
 - Keep the answer concise: ideally 1 sentence, plain text.
 - If a source link is present in the most relevant evidence, you may include it once at the end.
 """
@@ -116,6 +118,8 @@ Rules:
 - The search query must use the user's actual topic words plus the destination when useful.
 - Do not request a search if the present evidence already answers the question.
 - Do not mistake background context for an answer unless it directly answers the user's question.
+- If the user asks for accommodations, resorts, hotels, restaurants, amenities, air conditioning, lists, or recommendations and the current evidence is only weather/news background, set "answered" to false and create a targeted search query for that request.
+- Do not treat destination risk summaries, weather recaps, or generic travel conditions as an answer to accommodation or amenity questions.
 - Do not include markdown, commentary, or extra keys.
 """
 
@@ -132,6 +136,7 @@ Rules:
 - If the current journey evidence is not enough, set "answered" to false, put "" in "answer", and provide one short targeted search query in "search_query".
 - Use the user's actual wording plus the origin and destination when useful.
 - Do not request a search if the current evidence already answers the question.
+- Do not treat destination risk summaries or generic travel conditions as an answer to a transport-choice question.
 - Do not include commentary or extra keys.
 """
 
@@ -155,6 +160,7 @@ Rules:
 - Do not produce a generic travel brief.
 - Do not include risk levels, bullet advice, or unrelated recap.
 - Give only the exact answer needed for the question, not a full destination summary.
+- Do not restate destination risk or weather/news recap unless it directly changes the transport or journey answer.
 - Keep the answer concise: 1-3 short sentences, plain text.
 - If a source link is present in the most relevant evidence, you may include it once at the end.
 """

@@ -56,7 +56,6 @@ def _gather_place_evidence(place: str) -> Dict[str, Any]:
     brief, err = build_travel_brief(place)
     return {
         "place": place,
-        "risk_level": brief.get("risk_level"),
         "weather_summary": brief.get("weather_summary"),
         "weather_reasons": brief.get("weather_reasons") or [],
         "news_items": brief.get("news_items") or [],
