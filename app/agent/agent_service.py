@@ -12,6 +12,7 @@ from app.settings import settings
 from app.agent.agent_tools import weather_tool, news_tool, news_search_tool, city_risk_tool, travel_brief_tool
 from app.agent.agent_prompts import ANSWER_MODE_ROUTER_SYSTEM_PROMPT, LOCAL_INTELLIGENCE_SYSTEM_PROMPT
 from app.agent.followup_qa import (
+    answer_general_followup as _answer_general_followup,
     answer_journey_question as _answer_journey_question,
     answer_news_followup as _answer_news_followup,
     answer_weather_followup as _answer_weather_followup,
@@ -19,11 +20,13 @@ from app.agent.followup_qa import (
 
 # session memory (Redis-backed)
 from app.session.session_cache import (
+    get_active_destination,
     get_last_exchange,
     get_pending_agent_context,
     get_recent_turns,
     get_pending_journey_question,
     mark_tools_called,
+    set_active_destination,
     set_pending_agent_context,
     set_pending_journey_question,
     should_include,
@@ -362,11 +365,19 @@ async def run_agent(
     """
     last_user, last_reply = await get_last_exchange(session_id)
     recent_turns = await get_recent_turns(session_id)
+    active_destination = await get_active_destination(session_id)
     pending_agent_context = await get_pending_agent_context(session_id)
     pending_journey_question = await get_pending_journey_question(session_id)
+    if active_destination and active_destination != place:
+        recent_turns = []
+        pending_agent_context = None
+        pending_journey_question = None
+        await set_pending_agent_context(session_id, None)
+        await set_pending_journey_question(session_id, None)
     effective_question = question
     origin = extract_origin(question, last_reply)
     pending_question = (pending_agent_context or {}).get("question")
+    same_destination_session = bool(question and active_destination == place and recent_turns)
 
     awaiting_origin = (pending_agent_context or {}).get("awaiting") == "origin"
     if awaiting_origin:
@@ -423,6 +434,7 @@ async def run_agent(
             user_message=question,
             agent_reply=result["final"],
         )
+        await set_active_destination(session_id, place)
         if debug:
             result["debug"] = []
         return result
@@ -440,6 +452,26 @@ async def run_agent(
             user_message=question,
             agent_reply=result["final"],
         )
+        await set_active_destination(session_id, place)
+        if debug:
+            result["debug"] = []
+        return result
+
+    if same_destination_session and answer_mode == "travel_brief":
+        result = await _answer_general_followup(
+            _llm,
+            place,
+            question or "",
+            last_reply,
+            conversation_history=recent_turns,
+        )
+        await mark_tools_called(
+            session_id,
+            tool_names=[],
+            user_message=question,
+            agent_reply=result["final"],
+        )
+        await set_active_destination(session_id, place)
         if debug:
             result["debug"] = []
         return result
@@ -465,6 +497,7 @@ async def run_agent(
             user_message=question,
             agent_reply=clarification,
         )
+        await set_active_destination(session_id, place)
         result: Dict[str, Any] = {
             "place": place,
             "final": clarification,
@@ -495,6 +528,7 @@ async def run_agent(
             user_message=question,
             agent_reply=result["final"],
         )
+        await set_active_destination(session_id, place)
         if debug:
             result["debug"] = []
         return result
@@ -551,6 +585,7 @@ async def run_agent(
         user_message=question,
         agent_reply=final_text,
     )
+    await set_active_destination(session_id, place)
 
     brief = _extract_structured_brief(messages, place)
     result: Dict[str, Any] = {
