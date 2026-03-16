@@ -58,6 +58,7 @@ def fetch_news_items(place: str) -> Tuple[List[Dict[str, Any]], str]:
                 else item.get("source"),
                 "date": parsed_date.isoformat(),
                 "link": item.get("link"),
+                "snippet": item.get("snippet"),
             }
         )
 

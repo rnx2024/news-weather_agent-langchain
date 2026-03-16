@@ -222,9 +222,12 @@ async def run_agent(
             "- Always produce a one-paragraph travel brief for the specified location.",
             "- You MUST call travel_brief_tool exactly once before writing the final answer.",
             "- Use the travel_brief_tool result as the primary source for risk level, travel advice, and supporting travel context.",
+            "- Ground the answer in the concrete travel_brief_tool evidence: weather_summary, weather_reasons, news_items, and news_reasons when available.",
             "- Use the city_risk_tool only when the user explicitly asks about safety level, risk, or go/no-go judgment.",
             "- Explicitly frame the answer around travel conditions, likely disruptions, and practical planning impact.",
-            "- Do NOT include explicit weather/news text in the final paragraph unless the user asked for it or a new update is available.",
+            "- Do NOT give generic advice. If weather data is available, mention the material weather signal driving the advice. If news_items are available, mention the most relevant reported issue from the title/snippet.",
+            "- If news_items is empty, say that the current news scan did not identify a major local traveler-facing disruption.",
+            "- If the user asks for news details, answer only from the retrieved titles/snippets/links. If that detail is absent, say it is not specified in the retrieved news.",
             "- If the user asks about disruptions or 'where' they are, ground the answer using recent news: list up to 3 named places if present, otherwise say 'no specific locations reported'.",
             f"- If the user's question mentions a different place than '{place}', begin with: \"You asked about <other place> but your selected location is {place}. To get updates for <other place>, change the Location.\" Then provide the recommendation for {place} only.",
         ]
