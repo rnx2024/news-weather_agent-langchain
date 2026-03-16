@@ -8,7 +8,8 @@ class Settings(BaseSettings):
     api_key: str
     openrouter_api_key: str
     openweather_api_key: str
-    serp_api_key: str 
+    serp_api_key: str
+    tavily_api: str = ""
 
     # LLM config
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
@@ -20,13 +21,14 @@ class Settings(BaseSettings):
     openmeteo_geocode_url: str = "https://geocoding-api.open-meteo.com/v1/search"
     openmeteo_forecast_url: str = "https://api.open-meteo.com/v1/forecast"
     serpapi_search_url: str = "https://serpapi.com/search.json"
+    tavily_search_url: str = "https://api.tavily.com/search"
     frontend_cors_origin: str
 
     # Database / cache
     redis_url: str
     redis_required: bool = False
     session_secret: str
-    
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

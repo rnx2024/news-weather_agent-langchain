@@ -354,7 +354,15 @@ def _append_followup_link_if_needed(final: str, evidence: Dict[str, Any], origin
 
 def _build_journey_targeted_query(origin: str, destination: str, question: str, route_or_transport: bool) -> str:
     if route_or_transport:
-        return f"{origin} {destination} road closure traffic bus transport"
+        question_terms = re.findall(r"[A-Za-z0-9][A-Za-z0-9'.-]*", question or "")
+        filtered_terms = [
+            term
+            for term in question_terms
+            if term.lower() not in _FOLLOWUP_STOPWORDS and len(term) > 2
+        ]
+        if filtered_terms:
+            return f"{' '.join(filtered_terms[:10])} {origin} {destination}".strip()
+        return f"{origin} {destination} transport route travel"
 
     lowered = (question or "").lower()
     if any(term in lowered for term in ("continue", "delay", "closure", "disruption", "strike", "cancel", "postpone")):

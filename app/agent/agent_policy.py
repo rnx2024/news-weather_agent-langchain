@@ -97,6 +97,20 @@ _ROUTE_TRANSPORT_TERMS = (
     "which transport",
     "how should i get",
     "how do i get",
+    "should i take",
+    "go by",
+)
+
+_TRANSPORT_MODE_TERMS = (
+    "plane",
+    "flight",
+    "ferry",
+    "boat",
+    "ship",
+    "bus",
+    "car",
+    "drive",
+    "train",
 )
 
 _ORIGIN_QUESTION_TERMS = (
@@ -349,6 +363,9 @@ def is_journey_planning_question(q: Optional[str]) -> bool:
     if _has_any_term(s, _JOURNEY_TERMS):
         return True
 
+    if _mentions_transport_choice(s):
+        return True
+
     has_route_phrase = bool(re.search(r"\bfrom\s+\S+", s)) and bool(re.search(r"\bto\s+\S+", s))
     return has_route_phrase and any(token in s for token in ("trip", "travel", "route", "transport", "transpo"))
 
@@ -356,7 +373,8 @@ def is_journey_planning_question(q: Optional[str]) -> bool:
 def asks_route_or_transport(question: Optional[str]) -> bool:
     if not question:
         return False
-    return _has_any_term(question.lower(), _ROUTE_TRANSPORT_TERMS)
+    q = question.lower()
+    return _has_any_term(q, _ROUTE_TRANSPORT_TERMS) or _mentions_transport_choice(q)
 
 
 def needs_origin_clarification(question: Optional[str], last_reply: Optional[str] = None) -> bool:
@@ -379,6 +397,7 @@ def extract_origin(question: Optional[str], last_reply: Optional[str] = None) ->
 
     patterns = (
         r"\bfrom\s+(.+?)\s+\bto\b",
+        r"\bfrom\s+(.+?)(?:[?.!,;]|$)",
         r"\btraveling from\s+(.+?)(?:\s+\bto\b|$)",
         r"\btravelling from\s+(.+?)(?:\s+\bto\b|$)",
         r"\bcoming from\s+(.+?)(?:\s+\bto\b|$)",
@@ -415,6 +434,20 @@ def _looks_like_location_reply(text: str) -> bool:
     if re.search(r"\b(bus|car|drive|flight|ferry|route|transport|transpo|weather|news|risk|safe|should|can|what|when|why|how)\b", compact, flags=re.IGNORECASE):
         return False
     return bool(re.fullmatch(r"[A-Za-z][A-Za-z .'-]*", compact))
+
+
+def _mentions_transport_choice(text: str) -> bool:
+    if not text:
+        return False
+
+    has_transport_mode = any(re.search(rf"\b{re.escape(term)}\b", text) for term in _TRANSPORT_MODE_TERMS)
+    if not has_transport_mode:
+        return False
+
+    if _has_any_term(text, _ROUTE_TRANSPORT_TERMS):
+        return True
+
+    return " or " in text
 
 
 def _token_overlap(a: str, b: str) -> set[str]:
