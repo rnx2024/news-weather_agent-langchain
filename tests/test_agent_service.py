@@ -83,36 +83,69 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_journey_question_without_origin_asks_for_clarification(self) -> None:
         with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, None))):
-            with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)) as mark_mock:
-                result = await run_agent(
-                    session_id="session-2",
-                    place="Vigan",
-                    question="Should I continue my trip?",
-                )
+            with patch("app.agent.agent_service.set_pending_journey_question", new=AsyncMock(return_value=None)) as pending_mock:
+                with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)) as mark_mock:
+                    result = await run_agent(
+                        session_id="session-2",
+                        place="Vigan",
+                        question="Should I continue my trip?",
+                    )
 
         self.assertIsNone(result["risk_level"])
         self.assertEqual(result["travel_advice"], [])
         self.assertEqual(result["sources"], [])
         self.assertIn("where are you traveling from", result["final"].lower())
+        pending_mock.assert_awaited_once_with("session-2", "Should I continue my trip?")
         mark_mock.assert_awaited()
+
+    async def test_journey_origin_reply_resumes_pending_transport_question_without_last_user(self) -> None:
+        with patch(
+            "app.agent.agent_service.get_last_exchange",
+            new=AsyncMock(return_value=(None, "Where are you traveling from?")),
+        ):
+            with patch("app.agent.agent_service.get_pending_journey_question", new=AsyncMock(return_value="So what's the best transpo for me? Ferry or plane?")):
+                with patch("app.agent.agent_service.set_pending_journey_question", new=AsyncMock(return_value=None)) as clear_mock:
+                    with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
+                        with patch(
+                            "app.agent.agent_service._answer_journey_question",
+                            new=AsyncMock(return_value={"place": "Davao", "final": "From Ilocos Sur, a flight is likely more practical than a ferry from the data gathered so far.", "risk_level": None, "travel_advice": [], "sources": [{"type": "weather"}, {"type": "news"}]}),
+                        ) as journey_mock:
+                            result = await run_agent(
+                                session_id="session-pending-origin",
+                                place="Davao",
+                                question="Ilocos Sur",
+                            )
+
+        self.assertIn("flight is likely more practical", result["final"].lower())
+        clear_mock.assert_awaited_once_with("session-pending-origin", None)
+        journey_mock.assert_awaited_once_with(
+            unittest.mock.ANY,
+            "Davao",
+            "So what's the best transpo for me? Ferry or plane?",
+            "Ilocos Sur",
+            route_or_transport=True,
+        )
 
     async def test_journey_origin_reply_resumes_previous_transport_question(self) -> None:
         with patch(
             "app.agent.agent_service.get_last_exchange",
             new=AsyncMock(return_value=("What's the best transport to go there?", "Where are you traveling from?")),
         ):
-            with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
-                with patch(
-                    "app.agent.agent_service._answer_journey_question",
-                    new=AsyncMock(return_value={"place": "La Union", "final": "Land travel looks practical right now.", "risk_level": None, "travel_advice": [], "sources": [{"type": "weather"}, {"type": "news"}]}),
-                ) as journey_mock:
-                    result = await run_agent(
-                        session_id="session-journey-origin",
-                        place="La Union",
-                        question="Ilocos Sur",
-                    )
+            with patch("app.agent.agent_service.get_pending_journey_question", new=AsyncMock(return_value=None)):
+                with patch("app.agent.agent_service.set_pending_journey_question", new=AsyncMock(return_value=None)) as clear_mock:
+                    with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
+                        with patch(
+                            "app.agent.agent_service._answer_journey_question",
+                            new=AsyncMock(return_value={"place": "La Union", "final": "Land travel looks practical right now.", "risk_level": None, "travel_advice": [], "sources": [{"type": "weather"}, {"type": "news"}]}),
+                        ) as journey_mock:
+                            result = await run_agent(
+                                session_id="session-journey-origin",
+                                place="La Union",
+                                question="Ilocos Sur",
+                            )
 
         self.assertEqual(result["final"], "Land travel looks practical right now.")
+        clear_mock.assert_awaited_once_with("session-journey-origin", None)
         journey_mock.assert_awaited_once_with(
             unittest.mock.ANY,
             "La Union",

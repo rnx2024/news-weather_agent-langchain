@@ -84,6 +84,37 @@ async def mark_sent(
         return
 
 
+async def set_pending_journey_question(
+    session_id: str,
+    question: str | None,
+    *,
+    ttl_seconds: int = DEFAULT_SESSION_TTL,
+) -> None:
+    if redis is None:
+        return
+
+    sk = sess_key(session_id)
+    try:
+        if question:
+            await redis.hset(sk, mapping={"pending_journey_question": question[:500]})
+            await redis.expire(sk, ttl_seconds)
+        else:
+            await redis.hdel(sk, "pending_journey_question")
+    except RedisError as exc:
+        log.warning("Redis write failed in set_pending_journey_question [session_id=%s]: %s", session_id, exc)
+
+
+async def get_pending_journey_question(session_id: str) -> str | None:
+    if redis is None:
+        return None
+    try:
+        value = await redis.hget(sess_key(session_id), "pending_journey_question")
+        return value or None
+    except RedisError as exc:
+        log.warning("Redis read failed in get_pending_journey_question [session_id=%s]: %s", session_id, exc)
+        return None
+
+
 async def mark_tools_called(
     session_id: str,
     *,

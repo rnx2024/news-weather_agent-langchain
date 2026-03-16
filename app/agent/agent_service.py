@@ -18,7 +18,13 @@ from app.agent.followup_qa import (
 )
 
 # session memory (Redis-backed)
-from app.session.session_cache import get_last_exchange, should_include, mark_tools_called
+from app.session.session_cache import (
+    get_last_exchange,
+    get_pending_journey_question,
+    mark_tools_called,
+    set_pending_journey_question,
+    should_include,
+)
 from app.agent.agent_policy import (
     AnswerMode,
     asks_route_or_transport,
@@ -295,8 +301,11 @@ async def run_agent(
     Run the LangGraph ReAct agent with tool gating per request.
     """
     last_user, last_reply = await get_last_exchange(session_id)
+    pending_journey_question = await get_pending_journey_question(session_id)
     resumed_origin = extract_origin(question, last_reply)
-    effective_question = last_user if resumed_origin and "where are you traveling from" in (last_reply or "").lower() and last_user else question
+    effective_question = question
+    if resumed_origin and "where are you traveling from" in (last_reply or "").lower():
+        effective_question = pending_journey_question or last_user or question
     answer_mode = classify_answer_mode(effective_question, last_reply)
     origin = resumed_origin or extract_origin(effective_question, last_reply)
     route_or_transport = asks_route_or_transport(effective_question)
@@ -349,6 +358,7 @@ async def run_agent(
             f"I can assess conditions in {place}, but I need your departure location to judge the trip itself. "
             "Where are you traveling from?"
         )
+        await set_pending_journey_question(session_id, question)
         await mark_tools_called(
             session_id,
             tool_names=[],
@@ -367,6 +377,7 @@ async def run_agent(
         return result
 
     if answer_mode == "journey_planning" and origin:
+        await set_pending_journey_question(session_id, None)
         result = await _answer_journey_question(
             _llm,
             place,
