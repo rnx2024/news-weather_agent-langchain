@@ -64,6 +64,21 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["sources"], [{"type": "weather"}, {"type": "news"}])
         self.assertIn("do not specify", result["final"].lower())
 
+    async def test_journey_question_without_origin_asks_for_clarification(self) -> None:
+        with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, None))):
+            with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)) as mark_mock:
+                result = await run_agent(
+                    session_id="session-2",
+                    place="Vigan",
+                    question="Should I continue my trip?",
+                )
+
+        self.assertIsNone(result["risk_level"])
+        self.assertEqual(result["travel_advice"], [])
+        self.assertEqual(result["sources"], [])
+        self.assertIn("where are you traveling from", result["final"].lower())
+        mark_mock.assert_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

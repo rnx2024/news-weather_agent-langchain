@@ -23,6 +23,14 @@ class AgentPolicyTests(unittest.TestCase):
         )
         self.assertEqual(mode, "news_followup")
 
+    def test_classify_journey_planning(self) -> None:
+        mode = classify_answer_mode("Should I continue my trip from Manila to Vigan today?")
+        self.assertEqual(mode, "journey_planning")
+
+    def test_classify_origin_reply_after_clarification(self) -> None:
+        mode = classify_answer_mode("From Manila", "Where are you traveling from?")
+        self.assertEqual(mode, "journey_planning")
+
 
 if __name__ == "__main__":
     unittest.main()

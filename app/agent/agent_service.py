@@ -14,7 +14,15 @@ from app.agent.agent_prompts import LOCAL_INTELLIGENCE_SYSTEM_PROMPT
 
 # session memory (Redis-backed)
 from app.session.session_cache import get_last_exchange, should_include, mark_tools_called
-from app.agent.agent_policy import AnswerMode, classify_answer_mode, decide_tool_includes, detect_force_signals
+from app.agent.agent_policy import (
+    AnswerMode,
+    asks_route_or_transport,
+    classify_answer_mode,
+    decide_tool_includes,
+    detect_force_signals,
+    extract_origin,
+    needs_origin_clarification,
+)
 
 
 # -----------------------------------------------------
@@ -51,17 +59,20 @@ def _get_react_app(include_weather: bool, include_news: bool):
     return app
 
 
-def _build_user_prompt(place: str, question: Optional[str]) -> str:
+def _build_user_prompt(place: str, question: Optional[str], origin: Optional[str] = None) -> str:
     if not question:
         return (
             "Provide a concise travel brief for the destination below. Focus on travel conditions, likely disruptions, "
             f"and what matters most for someone going there today: {place}."
         )
-    return (
+    parts = [
         f"Location: {place}\n"
         f"Question: {question}\n"
-        "Answer as ONE concise travel-oriented paragraph, plain text."
-    )
+    ]
+    if origin:
+        parts.append(f"Journey origin: {origin}\n")
+    parts.append("Answer as ONE concise travel-oriented paragraph, plain text.")
+    return "".join(parts)
 
 
 def _extract_final_message(messages: List[BaseMessage]) -> str:
@@ -183,6 +194,8 @@ def _build_policy_lines(
     include_news: bool,
     last_user: Optional[str],
     last_reply: Optional[str],
+    origin: Optional[str] = None,
+    route_or_transport: bool = False,
 ) -> List[str]:
     policy_lines: List[str] = ["Policy:", f"- Selected location: {place}"]
     if not include_weather:
@@ -225,6 +238,23 @@ def _build_policy_lines(
                 "- Do NOT include generic travel advice, risk level, or unrelated news unless the user explicitly asked for them.",
             ]
         )
+    elif answer_mode == "journey_planning":
+        policy_lines.extend(
+            [
+                "- Answer as a journey assessment, not as a destination-only travel brief.",
+                "- You MUST call travel_brief_tool exactly once first for the selected destination.",
+                f"- Treat '{origin or 'the departure location'}' as the trip origin and '{place}' as the destination.",
+                "- If origin is available, inspect origin-side conditions with weather_tool and/or news_tool when they are needed to answer the journey question.",
+                "- Distinguish departure conditions, destination conditions, and unknown route conditions.",
+                "- If the user asks whether they should continue or postpone the trip, state clearly what is known for the departure point and destination, then note any unknowns along the route.",
+                "- Do NOT claim a best route or best transport option from weather/news alone. If asked, say you can comment on likely disruptions and conditions, but not optimize the route without dedicated routing or transport data.",
+                "- Keep the answer concise and practical. Do NOT include generic travel-advice bullets or a risk label unless the user explicitly asks for a broad travel brief.",
+            ]
+        )
+        if route_or_transport:
+            policy_lines.append(
+                "- The user is asking about route or transport choice. Provide only limited guidance from weather/news at the origin and destination, and explicitly say dedicated routing data is not available."
+            )
     else:
         policy_lines.extend(
             [
@@ -259,9 +289,33 @@ async def run_agent(
     Run the LangGraph ReAct agent with tool gating per request.
     """
     last_user, last_reply = await get_last_exchange(session_id)
-
-    user_prompt = _build_user_prompt(place, question)
     answer_mode = classify_answer_mode(question, last_reply)
+    origin = extract_origin(question)
+    route_or_transport = asks_route_or_transport(question)
+
+    if answer_mode == "journey_planning" and needs_origin_clarification(question, last_reply):
+        clarification = (
+            f"I can assess conditions in {place}, but I need your departure location to judge the trip itself. "
+            "Where are you traveling from?"
+        )
+        await mark_tools_called(
+            session_id,
+            tool_names=[],
+            user_message=question,
+            agent_reply=clarification,
+        )
+        result: Dict[str, Any] = {
+            "place": place,
+            "final": clarification,
+            "risk_level": None,
+            "travel_advice": [],
+            "sources": [],
+        }
+        if debug:
+            result["debug"] = []
+        return result
+
+    user_prompt = _build_user_prompt(place, question, origin)
 
     # decide tool availability for this turn
     include_weather, include_news = decide_tool_includes(question)
@@ -275,6 +329,9 @@ async def run_agent(
         include_news = True
     elif answer_mode == "weather_followup":
         include_weather = True
+    elif answer_mode == "journey_planning":
+        include_weather = True
+        include_news = True
 
     if include_weather and not allow_weather and answer_mode == "travel_brief":
         include_weather = False
@@ -288,6 +345,8 @@ async def run_agent(
         include_news=include_news,
         last_user=last_user,
         last_reply=last_reply,
+        origin=origin,
+        route_or_transport=route_or_transport,
     )
 
     user_prompt = "\n".join(policy_lines) + "\n\n---\n\n" + user_prompt
