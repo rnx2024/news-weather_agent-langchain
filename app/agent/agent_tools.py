@@ -9,7 +9,6 @@ from langchain_core.tools import tool
 from app.weather.weather_service import get_weather_line, get_weather_summary
 from app.news.news_service import get_news_items, search_news
 from app.travel_brief import build_travel_brief
-from app.travel_intelligence import classify_risk_level, score_news_risk, score_weather_risk
 
 from app.tooling.sync_cache import (
     CACHE_TTL_SECONDS_DEFAULT,
@@ -247,21 +246,16 @@ def city_risk_tool(
         weather_rate.acquire()
         news_rate.acquire()
 
-        summary = _get_or_fetch_weather()
-        headlines = _get_or_fetch_news()
+        _get_or_fetch_weather()
+        _get_or_fetch_news()
+        brief, err = build_travel_brief(place)
+        if err and not brief["sources"]:
+            raise RuntimeError(err)
 
-        risk_score = 0
-        reasons: list[str] = []
-
-        w_score, w_reasons = score_weather_risk(summary)
-        risk_score += w_score
-        reasons.extend(w_reasons)
-
-        n_score, n_reasons = score_news_risk(place, headlines)
-        risk_score += n_score
-        reasons.extend(n_reasons)
-
-        level = classify_risk_level(risk_score, uppercase=True)
+        level = str(brief.get("risk_level") or "low").upper()
+        reasons = list(dict.fromkeys((brief.get("weather_reasons") or []) + (brief.get("news_reasons") or [])))
+        if not reasons:
+            reasons = list(brief.get("travel_advice") or [])
         return _build_message(level, reasons)
 
     return retry(call)

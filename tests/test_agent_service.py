@@ -29,11 +29,15 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
                 with patch("app.agent.followup_qa.get_news_items", return_value=(initial_items, "")):
                     with patch("app.agent.followup_qa.search_news", return_value=(targeted_items, "")) as search_mock:
                         with patch(
-                            "app.agent.followup_qa._run_followup_reasoner",
+                            "app.agent.followup_qa._plan_followup_action",
                             new=AsyncMock(
-                                return_value="The retrieved reporting does not confirm that the PISTON strike is in Vigan."
+                                return_value={
+                                    "answered": True,
+                                    "answer": "The retrieved reporting does not confirm that the PISTON strike is in Vigan.",
+                                    "search_query": "",
+                                }
                             ),
-                        ) as reasoner_mock:
+                        ):
                             with patch("app.agent.agent_service._get_react_app") as react_mock:
                                 result = await run_agent(
                                     session_id="session-1",
@@ -47,7 +51,6 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("confirms the piston strike is in vigan", result["final"].lower())
         self.assertNotIn("the retrieved reporting does not confirm", result["final"].lower())
         search_mock.assert_not_called()
-        reasoner_mock.assert_awaited()
         react_mock.assert_not_called()
 
     async def test_news_followup_softens_robotic_language(self) -> None:
@@ -64,12 +67,16 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
             with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
                 with patch("app.agent.followup_qa.get_news_items", return_value=(initial_items, "")):
                     with patch(
-                        "app.agent.followup_qa._run_followup_reasoner",
+                        "app.agent.followup_qa._plan_followup_action",
                         new=AsyncMock(
-                            return_value=(
-                                "The retrieved reporting does not specify any possible disruptions. "
-                                "For more details, you can check the news article here."
-                            )
+                            return_value={
+                                "answered": True,
+                                "answer": (
+                                    "The retrieved reporting does not specify any possible disruptions. "
+                                    "For more details, you can check the news article here."
+                                ),
+                                "search_query": "",
+                            }
                         ),
                     ):
                         result = await run_agent(
@@ -266,16 +273,26 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
                 with patch("app.agent.followup_qa.get_news_items", return_value=(initial_items, "")):
                     with patch("app.agent.followup_qa.search_news", return_value=(targeted_items, "")) as search_mock:
                         with patch(
-                            "app.agent.followup_qa._run_followup_reasoner",
+                            "app.agent.followup_qa._plan_followup_action",
                             new=AsyncMock(
-                                return_value="Based on the retrieved update, the vaccination drive is scheduled to continue through Saturday afternoon."
+                                return_value={
+                                    "answered": False,
+                                    "answer": "",
+                                    "search_query": "vaccination saturday san fernando la union",
+                                }
                             ),
                         ):
-                            result = await run_agent(
-                                session_id="session-3",
-                                place="San Fernando La Union",
-                                question="I plan to visit on Saturday. Will the vaccination last until Saturday?",
-                            )
+                            with patch(
+                                "app.agent.followup_qa._run_followup_reasoner",
+                                new=AsyncMock(
+                                    return_value="Based on the retrieved update, the vaccination drive is scheduled to continue through Saturday afternoon."
+                                ),
+                            ):
+                                result = await run_agent(
+                                    session_id="session-3",
+                                    place="San Fernando La Union",
+                                    question="I plan to visit on Saturday. Will the vaccination last until Saturday?",
+                                )
 
         self.assertIsNone(result["risk_level"])
         self.assertEqual(result["travel_advice"], [])
@@ -305,20 +322,30 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
                 with patch("app.agent.followup_qa.get_news_items", return_value=(initial_items, "")):
                     with patch("app.agent.followup_qa.search_news", return_value=([], "")):
                         with patch(
-                            "app.agent.followup_qa._run_followup_reasoner",
+                            "app.agent.followup_qa._plan_followup_action",
                             new=AsyncMock(
-                                return_value=(
-                                    "Davao looks generally fine for travel today, with a low risk level. "
-                                    "Recent local reporting highlights the IRONMAN 70.3 Davao event. "
-                                    "The current reporting does not say whether it will still be running this weekend."
-                                )
+                                return_value={
+                                    "answered": False,
+                                    "answer": "",
+                                    "search_query": "IRONMAN 70.3 Davao weekend schedule",
+                                }
                             ),
                         ):
-                            result = await run_agent(
-                                session_id="session-condense-news",
-                                place="Davao",
-                                question="Do you know how long IRONMAN will last? Will it be until this weekend?",
-                            )
+                            with patch(
+                                "app.agent.followup_qa._run_followup_reasoner",
+                                new=AsyncMock(
+                                    return_value=(
+                                        "Davao looks generally fine for travel today, with a low risk level. "
+                                        "Recent local reporting highlights the IRONMAN 70.3 Davao event. "
+                                        "The current reporting does not say whether it will still be running this weekend."
+                                    )
+                                ),
+                            ):
+                                result = await run_agent(
+                                    session_id="session-condense-news",
+                                    place="Davao",
+                                    question="Do you know how long IRONMAN will last? Will it be until this weekend?",
+                                )
 
         self.assertIn("does not say whether it will still be running this weekend", result["final"].lower())
         self.assertNotIn("looks generally fine for travel today", result["final"].lower())
@@ -339,12 +366,16 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
             with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
                 with patch("app.agent.followup_qa.get_news_items", return_value=(initial_items, "")):
                     with patch(
-                        "app.agent.followup_qa._run_followup_reasoner",
+                        "app.agent.followup_qa._plan_followup_action",
                         new=AsyncMock(
-                            return_value=(
-                                "The retrieved reporting does not specify any possible disruptions. "
-                                "For more details, you can check the news article here."
-                            )
+                            return_value={
+                                "answered": True,
+                                "answer": (
+                                    "The retrieved reporting does not specify any possible disruptions. "
+                                    "For more details, you can check the news article here."
+                                ),
+                                "search_query": "",
+                            }
                         ),
                     ):
                         result = await run_agent(
@@ -384,12 +415,22 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
             with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
                 with patch("app.agent.followup_qa.get_news_items", return_value=([], "")):
                     with patch("app.agent.followup_qa.search_news", return_value=([], "")):
-                        with patch("app.agent.followup_qa._run_followup_reasoner", new=AsyncMock(return_value="")):
-                            result = await run_agent(
-                                session_id="session-no-answer-news",
-                                place="Cebu",
-                                question="Will that event still be running this weekend?",
-                            )
+                        with patch(
+                            "app.agent.followup_qa._plan_followup_action",
+                            new=AsyncMock(
+                                return_value={
+                                    "answered": False,
+                                    "answer": "",
+                                    "search_query": "cebu weekend event running",
+                                }
+                            ),
+                        ):
+                            with patch("app.agent.followup_qa._run_followup_reasoner", new=AsyncMock(return_value="")):
+                                result = await run_agent(
+                                    session_id="session-no-answer-news",
+                                    place="Cebu",
+                                    question="Will that event still be running this weekend?",
+                                )
 
         self.assertEqual(result["final"], "I couldn't find a confirmed answer in the current news for Cebu.")
 

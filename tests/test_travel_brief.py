@@ -33,7 +33,23 @@ class TravelBriefTests(unittest.TestCase):
 
         with patch("app.travel_brief.get_weather_summary", return_value=(weather_summary, None)):
             with patch("app.travel_brief.get_news_items", return_value=(headlines, "")):
-                brief, err = build_travel_brief("Cebu")
+                with patch(
+                    "app.travel_brief.assess_travel_concern",
+                    return_value={
+                        "risk_level": "high",
+                        "final": (
+                            "Cebu may be challenging for travel today. Expect moderate rain with temperatures around 24-30°C. "
+                            "Airport shuttle delays after runway works may affect transfers."
+                        ),
+                        "travel_advice": [
+                            "Allow extra transit time because airport shuttle delays are affecting transfers."
+                        ],
+                        "weather_reasons": ["moderate rain may slow local movement"],
+                        "news_reasons": ["airport shuttle delays may affect transfers"],
+                        "relevant_news_items": headlines,
+                    },
+                ):
+                    brief, err = build_travel_brief("Cebu")
 
         self.assertEqual(err, "")
         self.assertEqual(brief["risk_level"], "high")
@@ -42,7 +58,7 @@ class TravelBriefTests(unittest.TestCase):
         self.assertIn("Airport shuttle delays after runway works", brief["final"])
         self.assertEqual(brief["news_items"][0]["snippet"], headlines[0]["snippet"])
         self.assertTrue(
-            any("Airport shuttle delays after runway works" in item for item in brief["travel_advice"]),
+            any("airport shuttle delays" in item.lower() for item in brief["travel_advice"]),
             brief["travel_advice"],
         )
         self.assertTrue(brief["weather_reasons"])
@@ -67,18 +83,26 @@ class TravelBriefTests(unittest.TestCase):
 
         with patch("app.travel_brief.get_weather_summary", return_value=(weather_summary, None)):
             with patch("app.travel_brief.get_news_items", return_value=([], "provider unavailable")):
-                brief, err = build_travel_brief("Cebu")
+                with patch(
+                    "app.travel_brief.assess_travel_concern",
+                    return_value={
+                        "risk_level": "low",
+                        "final": "Cebu travel conditions could not be fully assessed from the currently gathered data.",
+                        "travel_advice": ["Local news context could not be confirmed from the current scan."],
+                        "weather_reasons": ["mainly clear weather supports routine plans"],
+                        "news_reasons": [],
+                        "relevant_news_items": [],
+                    },
+                ):
+                    brief, err = build_travel_brief("Cebu")
 
         self.assertEqual(err, "provider unavailable")
-        self.assertIn("could not be confirmed", brief["final"].lower())
+        self.assertIn("could not be fully assessed", brief["final"].lower())
         self.assertFalse(
             any("did not surface a major traveler-facing disruption" in item.lower() for item in brief["travel_advice"]),
             brief["travel_advice"],
         )
-        self.assertTrue(
-            any("forecast is mainly clear around 25-31" in item.lower() for item in brief["travel_advice"]),
-            brief["travel_advice"],
-        )
+        self.assertIn("Local news context could not be confirmed", brief["travel_advice"][0])
 
 
 if __name__ == "__main__":

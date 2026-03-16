@@ -4,10 +4,9 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
-from app.agent.agent_prompts import FOLLOWUP_QA_SYSTEM_PROMPT, JOURNEY_QA_SYSTEM_PROMPT
+from app.agent.agent_prompts import FOLLOWUP_ACTION_SYSTEM_PROMPT, FOLLOWUP_QA_SYSTEM_PROMPT, JOURNEY_QA_SYSTEM_PROMPT
 from app.news.news_service import get_news_items, search_news
 from app.travel_brief import build_travel_brief
-from app.travel_intelligence import score_news_risk
 from app.weather.weather_service import get_weather_line, get_weather_summary
 
 _FOLLOWUP_STOPWORDS = {
@@ -134,6 +133,26 @@ async def _run_journey_reasoner(llm: Any, *, place: str, question: str, evidence
     )
 
 
+async def _plan_followup_action(llm: Any, *, place: str, question: str, evidence: Dict[str, Any]) -> Dict[str, Any]:
+    raw = await _invoke_reasoner(
+        llm,
+        FOLLOWUP_ACTION_SYSTEM_PROMPT,
+        place=place,
+        question=question,
+        evidence=evidence,
+    )
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {"answered": False, "answer": "", "search_query": ""}
+
+    return {
+        "answered": bool(parsed.get("answered")),
+        "answer": str(parsed.get("answer") or "").strip(),
+        "search_query": str(parsed.get("search_query") or "").strip(),
+    }
+
+
 def _soften_followup_tone(final: str, place: str) -> str:
     text = (final or "").strip()
     if not text:
@@ -219,51 +238,6 @@ def _condense_direct_answer(final: str) -> str:
     return parts[0].strip()
 
 
-def _is_duration_question(question: str) -> bool:
-    q = (question or "").lower()
-    return any(term in q for term in ("until", "last", "still", "continue", "ongoing", "on saturday", "on sunday"))
-
-
-def _is_location_question(question: str) -> bool:
-    q = (question or "").lower()
-    return any(term in q for term in ("where", "in ", "location", "area", "which part"))
-
-
-def _is_disruption_question(question: str) -> bool:
-    q = (question or "").lower()
-    return any(term in q for term in ("disruption", "problem", "issue", "closure", "strike", "does this affect"))
-
-
-def _contains_schedule_signal(text: str) -> bool:
-    lowered = (text or "").lower()
-    day_tokens = (
-        "monday",
-        "tuesday",
-        "wednesday",
-        "thursday",
-        "friday",
-        "saturday",
-        "sunday",
-        "week",
-        "weekend",
-        "until",
-        "through",
-    )
-    has_named_time = any(token in lowered for token in day_tokens)
-    has_calendar_date = bool(re.search(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b", lowered))
-    return has_named_time or has_calendar_date
-
-
-def _extract_place_phrase(text: str) -> str | None:
-    if not text:
-        return None
-
-    match = re.search(r"\bin\s+([A-Z][A-Za-z .-]+)", text)
-    if match:
-        return match.group(1).strip()
-    return None
-
-
 def _build_news_targeted_query(place: str, question: str, item: Dict[str, Any] | None, last_reply: Optional[str]) -> str:
     question_terms = re.findall(r"[A-Za-z0-9][A-Za-z0-9'.-]*", question or "")
     filtered_terms = [
@@ -282,20 +256,6 @@ def _build_news_targeted_query(place: str, question: str, item: Dict[str, Any] |
         tokens = list(_tokenize_for_followup(last_reply))
     query_core = " ".join(tokens[:6]).strip()
     return f"{query_core} {place}".strip() or place
-
-
-def _news_item_answers_question(question: str, item: Dict[str, Any] | None) -> bool:
-    text = _news_text(item)
-    if not text:
-        return False
-
-    if _is_duration_question(question):
-        return _contains_schedule_signal(text)
-    if _is_location_question(question):
-        return _extract_place_phrase(text) is not None
-    if _is_disruption_question(question):
-        return True
-    return bool(_tokenize_for_followup(question) & _tokenize_for_followup(text))
 
 
 def _extract_best_news_link(evidence: Dict[str, Any]) -> str | None:
@@ -434,33 +394,39 @@ async def answer_news_followup(llm: Any, place: str, question: str, last_reply: 
         return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": []}
 
     matched_item = _match_news_item(question, last_reply, items)
-    need_targeted_search = not _news_item_answers_question(question, matched_item)
-
-    targeted_query = _build_news_targeted_query(place, question, matched_item, last_reply)
-    targeted_items: List[Dict[str, Any]] = []
-    targeted_match: Dict[str, Any] | None = None
-    targeted_err = ""
-    if need_targeted_search:
-        targeted_items, targeted_err = search_news(targeted_query, place)
-        targeted_match = _match_news_item(question, last_reply, targeted_items)
-
-    evidence = {
+    current_evidence = {
         "mode": "news_followup",
         "question": question,
         "current_news_items": items[:3],
         "matched_current_item": matched_item,
-        "used_targeted_search": need_targeted_search,
-        "targeted_search_query": targeted_query if need_targeted_search else None,
-        "targeted_search_error": targeted_err or None,
-        "targeted_news_items": targeted_items[:3],
-        "matched_targeted_item": targeted_match,
-        "current_item_answers_question": _news_item_answers_question(question, matched_item),
-        "targeted_item_answers_question": _news_item_answers_question(question, targeted_match),
+        "used_targeted_search": False,
+        "targeted_search_query": None,
+        "targeted_search_error": None,
+        "targeted_news_items": [],
+        "matched_targeted_item": None,
     }
-    final = await _run_followup_reasoner(llm, place=place, question=question, evidence=evidence)
-    raw_final = final
-    if not final:
-        final = f"I couldn't find a confirmed answer in the current news for {place}."
+
+    plan = await _plan_followup_action(llm, place=place, question=question, evidence=current_evidence)
+    if plan["answered"] and plan["answer"]:
+        final = plan["answer"]
+        raw_final = final
+        evidence = current_evidence
+    else:
+        targeted_query = plan["search_query"] or _build_news_targeted_query(place, question, matched_item, last_reply)
+        targeted_items, targeted_err = search_news(targeted_query, place)
+        targeted_match = _match_news_item(question, last_reply, targeted_items)
+        evidence = {
+            **current_evidence,
+            "used_targeted_search": True,
+            "targeted_search_query": targeted_query,
+            "targeted_search_error": targeted_err or None,
+            "targeted_news_items": targeted_items[:3],
+            "matched_targeted_item": targeted_match,
+        }
+        final = await _run_followup_reasoner(llm, place=place, question=question, evidence=evidence)
+        raw_final = final
+        if not final:
+            final = f"I couldn't find a confirmed answer in the current news for {place}."
 
     final = _soften_followup_tone(final, place)
     final = _condense_direct_answer(final)

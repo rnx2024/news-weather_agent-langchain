@@ -1,41 +1,29 @@
 import unittest
 
-from app.travel_intelligence import filter_relevant_news_items
+from app.travel_intelligence import classify_risk_level, score_weather_risk
 
 
 class TravelIntelligenceTests(unittest.TestCase):
-    def test_filter_relevant_news_items_drops_low_signal_program_news(self) -> None:
-        headlines = [
-            {
-                "title": "Cebu City Launches Job Program For Senior Citizens",
-                "snippet": "A local livelihood initiative will support senior citizens in Cebu City.",
-                "link": "https://example.com/job-program",
+    def test_score_weather_risk_flags_strong_signals(self) -> None:
+        summary = {
+            "current": {"weather_code": 63},
+            "day": {
+                "wind_speed_max_kmh": 55,
+                "precip_mm": 12,
+                "tmax_c": 33,
+                "tmin_c": 24,
             },
-            {
-                "title": "Airport shuttle delays after runway works",
-                "snippet": "Mactan terminal transfers are taking longer than usual during overnight repairs.",
-                "link": "https://example.com/airport-delays",
-            },
-        ]
+        }
 
-        filtered = filter_relevant_news_items("Cebu", headlines)
+        score, reasons = score_weather_risk(summary)
 
-        self.assertEqual(len(filtered), 1)
-        self.assertEqual(filtered[0]["title"], "Airport shuttle delays after runway works")
+        self.assertGreaterEqual(score, 4)
+        self.assertTrue(reasons)
 
-    def test_filter_relevant_news_items_keeps_event_news_when_place_matches(self) -> None:
-        headlines = [
-            {
-                "title": "Foreign, local aces gear up for fierce challenge at IRONMAN 70.3 Davao",
-                "snippet": "The race weekend is expected to bring extra road activity in Davao.",
-                "link": "https://example.com/ironman",
-            }
-        ]
-
-        filtered = filter_relevant_news_items("Davao", headlines)
-
-        self.assertEqual(len(filtered), 1)
-        self.assertEqual(filtered[0]["title"], headlines[0]["title"])
+    def test_classify_risk_level_returns_expected_band(self) -> None:
+        self.assertEqual(classify_risk_level(0), "low")
+        self.assertEqual(classify_risk_level(2), "medium")
+        self.assertEqual(classify_risk_level(5), "high")
 
 
 if __name__ == "__main__":
