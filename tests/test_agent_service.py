@@ -1,68 +1,53 @@
-import json
 import unittest
 from unittest.mock import AsyncMock, patch
-
-from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agent.agent_service import run_agent
 
 
-class _FakeAgentApp:
-    async def ainvoke(self, _payload):
-        brief = {
-            "place": "Vigan",
-            "final": "Vigan is manageable for travel today.",
-            "risk_level": "medium",
-            "travel_advice": [
-                "Recent local reporting highlights a PISTON strike; verify the latest official status before departure"
-            ],
-            "sources": [{"type": "weather"}, {"type": "news"}],
-            "weather_summary": {
-                "current": {"weather_text": "Clear sky"},
-                "day": {"tmin_c": 24, "tmax_c": 31},
-            },
-            "weather_reasons": [],
-            "news_reasons": ["recent reports suggest possible transport or access disruptions"],
-            "news_items": [
-                {
-                    "title": "PISTON strike affects transport routes",
-                    "snippet": "The report does not specify whether the strike is in Vigan.",
-                    "source": "Local News",
-                    "date": "2026-03-16T05:00:00+00:00",
-                    "link": "https://example.com/piston-strike",
-                }
-            ],
-        }
-        return {
-            "messages": [
-                AIMessage(
-                    content="",
-                    tool_calls=[{"id": "call1", "name": "travel_brief_tool", "args": {"place": "Vigan"}}],
-                ),
-                ToolMessage(content=json.dumps(brief), tool_call_id="call1"),
-                AIMessage(
-                    content="The retrieved Vigan news mentions a PISTON strike, but the available snippets do not specify that it is in Vigan.",
-                ),
-            ]
-        }
-
-
 class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_news_followup_hides_brief_metadata(self) -> None:
+        initial_items = [
+            {
+                "title": "PISTON strike affects transport routes",
+                "snippet": "The report does not specify whether the strike is in Vigan.",
+                "source": "Local News",
+                "date": "2026-03-16T05:00:00+00:00",
+                "link": "https://example.com/piston-strike",
+            }
+        ]
+        targeted_items = [
+            {
+                "title": "PISTON strike update",
+                "snippet": "The updated report still does not confirm that the strike is in Vigan.",
+                "source": "Local News",
+                "date": "2026-03-16T06:00:00+00:00",
+                "link": "https://example.com/piston-strike-update",
+            }
+        ]
         with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, None))):
-            with patch("app.agent.agent_service.should_include", new=AsyncMock(return_value=(True, True))):
-                with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
-                    with patch("app.agent.agent_service._get_react_app", return_value=_FakeAgentApp()):
-                        result = await run_agent(
-                            session_id="session-1",
-                            place="Vigan",
-                            question="Can you check if the PISTON strike is in Vigan?",
-                        )
+            with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
+                with patch("app.agent.agent_service.get_news_items", return_value=(initial_items, "")):
+                    with patch("app.agent.agent_service.search_news", return_value=(targeted_items, "")) as search_mock:
+                        with patch(
+                            "app.agent.agent_service._run_followup_reasoner",
+                            new=AsyncMock(
+                                return_value="The retrieved reporting does not confirm that the PISTON strike is in Vigan."
+                            ),
+                        ) as reasoner_mock:
+                            with patch("app.agent.agent_service._get_react_app") as react_mock:
+                                result = await run_agent(
+                                    session_id="session-1",
+                                    place="Vigan",
+                                    question="Can you check if the PISTON strike is in Vigan?",
+                                )
 
         self.assertIsNone(result["risk_level"])
         self.assertEqual(result["travel_advice"], [])
-        self.assertEqual(result["sources"], [{"type": "weather"}, {"type": "news"}])
-        self.assertIn("do not specify", result["final"].lower())
+        self.assertEqual(result["sources"], [{"type": "news"}])
+        self.assertIn("does not confirm", result["final"].lower())
+        search_mock.assert_not_called()
+        reasoner_mock.assert_awaited()
+        react_mock.assert_not_called()
 
     async def test_journey_question_without_origin_asks_for_clarification(self) -> None:
         with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, None))):
@@ -78,6 +63,51 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["sources"], [])
         self.assertIn("where are you traveling from", result["final"].lower())
         mark_mock.assert_awaited()
+
+    async def test_news_followup_duration_uses_targeted_search_and_direct_answer(self) -> None:
+        initial_items = [
+            {
+                "title": "La Union city launches free vaccination campaign to prevent rabies",
+                "snippet": "The initial item announces the campaign but does not include an end date.",
+                "source": "Local News",
+                "date": "2026-03-16T05:00:00+00:00",
+                "link": "https://example.com/vaccine-campaign",
+            }
+        ]
+        targeted_items = [
+            {
+                "title": "Vaccination campaign runs through Saturday in San Fernando",
+                "snippet": "City officials said the free vaccination drive will continue through Saturday afternoon.",
+                "source": "Local News",
+                "date": "2026-03-16T06:00:00+00:00",
+                "link": "https://example.com/vaccine-campaign-saturday",
+            }
+        ]
+        prior_reply = (
+            "San Fernando La Union has a low travel risk level. Recent local reporting highlights "
+            "La Union city launches free vaccination campaign to prevent rabies."
+        )
+        with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, prior_reply))):
+            with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
+                with patch("app.agent.agent_service.get_news_items", return_value=(initial_items, "")):
+                    with patch("app.agent.agent_service.search_news", return_value=(targeted_items, "")) as search_mock:
+                        with patch(
+                            "app.agent.agent_service._run_followup_reasoner",
+                            new=AsyncMock(
+                                return_value="Based on the retrieved update, the vaccination drive is scheduled to continue through Saturday afternoon."
+                            ),
+                        ):
+                            result = await run_agent(
+                                session_id="session-3",
+                                place="San Fernando La Union",
+                                question="I plan to visit on Saturday. Will the vaccination last until Saturday?",
+                            )
+
+        self.assertIsNone(result["risk_level"])
+        self.assertEqual(result["travel_advice"], [])
+        self.assertEqual(result["sources"], [{"type": "news"}])
+        self.assertIn("through saturday afternoon", result["final"].lower())
+        search_mock.assert_called_once()
 
 
 if __name__ == "__main__":

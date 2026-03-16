@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional, Set, Tuple, cast
 
 from langchain_openai import ChatOpenAI
@@ -10,7 +11,10 @@ from langgraph.prebuilt import create_react_agent
 
 from app.settings import settings
 from app.agent.agent_tools import weather_tool, news_tool, news_search_tool, city_risk_tool, travel_brief_tool
-from app.agent.agent_prompts import LOCAL_INTELLIGENCE_SYSTEM_PROMPT
+from app.agent.agent_prompts import FOLLOWUP_QA_SYSTEM_PROMPT, LOCAL_INTELLIGENCE_SYSTEM_PROMPT
+from app.news.news_service import get_news_items, search_news
+from app.weather.weather_service import get_weather_line, get_weather_summary
+from app.travel_intelligence import score_news_risk
 
 # session memory (Redis-backed)
 from app.session.session_cache import get_last_exchange, should_include, mark_tools_called
@@ -39,6 +43,42 @@ _llm = ChatOpenAI(
 # Tool-gated helpers
 # -----------------------------------------------------
 _REACT_APP_CACHE: Dict[Tuple[bool, bool], Any] = {}
+_FOLLOWUP_STOPWORDS = {
+    "about",
+    "after",
+    "also",
+    "and",
+    "any",
+    "are",
+    "campaign",
+    "city",
+    "does",
+    "going",
+    "have",
+    "into",
+    "just",
+    "know",
+    "last",
+    "local",
+    "news",
+    "question",
+    "recent",
+    "reported",
+    "risk",
+    "saturday",
+    "should",
+    "still",
+    "that",
+    "there",
+    "this",
+    "until",
+    "visit",
+    "what",
+    "when",
+    "where",
+    "will",
+    "with",
+}
 
 
 def _get_react_app(include_weather: bool, include_news: bool):
@@ -186,6 +226,244 @@ def _extract_structured_brief(messages: List[BaseMessage], place: str) -> Dict[s
     }
 
 
+def _tokenize_for_followup(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z]{4,}", (text or "").lower())
+        if token not in _FOLLOWUP_STOPWORDS
+    }
+
+
+def _match_news_item(question: str, last_reply: Optional[str], items: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    if not items:
+        return None
+
+    q_tokens = _tokenize_for_followup(question)
+    last_tokens = _tokenize_for_followup(last_reply or "")
+    best_item: Dict[str, Any] | None = None
+    best_score = -1
+
+    for item in items:
+        blob = f"{item.get('title') or ''} {item.get('snippet') or ''}".lower()
+        item_tokens = _tokenize_for_followup(blob)
+        score = len(q_tokens & item_tokens) * 3 + len(last_tokens & item_tokens)
+        if score > best_score:
+            best_score = score
+            best_item = item
+
+    return best_item or items[0]
+
+
+def _news_text(item: Dict[str, Any] | None) -> str:
+    if not item:
+        return ""
+    return " ".join(
+        part.strip()
+        for part in (str(item.get("title") or ""), str(item.get("snippet") or ""))
+        if part and str(part).strip()
+    ).strip()
+
+
+async def _run_followup_reasoner(
+    *,
+    place: str,
+    question: str,
+    evidence: Dict[str, Any],
+) -> str:
+    payload = json.dumps(evidence, ensure_ascii=True, indent=2)
+    response = await _llm.ainvoke(
+        [
+            {"role": "system", "content": FOLLOWUP_QA_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": f"Destination: {place}\nQuestion: {question}\nEvidence:\n{payload}",
+            },
+        ]
+    )
+    return str(getattr(response, "content", "") or "").strip()
+
+
+def _is_duration_question(question: str) -> bool:
+    q = (question or "").lower()
+    return any(term in q for term in ("until", "last", "still", "continue", "ongoing", "on saturday", "on sunday"))
+
+
+def _is_location_question(question: str) -> bool:
+    q = (question or "").lower()
+    return any(term in q for term in ("where", "in ", "location", "area", "which part"))
+
+
+def _is_disruption_question(question: str) -> bool:
+    q = (question or "").lower()
+    return any(term in q for term in ("disruption", "problem", "issue", "closure", "strike", "does this affect"))
+
+
+def _contains_schedule_signal(text: str) -> bool:
+    t = (text or "").lower()
+    return any(
+        token in t
+        for token in (
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+            "week",
+            "weekend",
+            "until",
+            "through",
+        )
+    ) or bool(re.search(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b", t))
+
+
+def _extract_place_phrase(text: str) -> str | None:
+    if not text:
+        return None
+    match = re.search(r"\bin\s+([A-Z][A-Za-z .-]+)", text)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def _build_news_targeted_query(place: str, question: str, item: Dict[str, Any] | None, last_reply: Optional[str]) -> str:
+    if item and item.get("title"):
+        return f"{item['title']} {place}"
+
+    tokens = list(_tokenize_for_followup(question))
+    if not tokens and last_reply:
+        tokens = list(_tokenize_for_followup(last_reply))
+    query_core = " ".join(tokens[:6]).strip()
+    return f"{query_core} {place}".strip() or place
+
+
+def _build_news_followup_final(place: str, question: str, item: Dict[str, Any] | None) -> str | None:
+    text = _news_text(item)
+    if not text:
+        return None
+
+    title = str(item.get("title") or "the retrieved report").strip()
+    snippet = str(item.get("snippet") or "").strip()
+
+    if _is_duration_question(question):
+        if _contains_schedule_signal(text):
+            return f"The retrieved news says {title}. Based on the available report, it appears to include timing details: {snippet or title}"
+        return f"The retrieved news mentions {title}, but the available snippets do not say whether it will still be running on Saturday."
+
+    if _is_location_question(question):
+        specific_place = _extract_place_phrase(text)
+        if specific_place:
+            return f"The retrieved news places it in {specific_place}."
+        return f"The retrieved news mentions {title}, but the available snippets do not identify a more specific location."
+
+    if _is_disruption_question(question):
+        score, _ = score_news_risk(place, [item])
+        if score >= 2:
+            return f"The retrieved news suggests this could affect travel convenience, but it does not read like a major emergency-level disruption."
+        return f"The retrieved news mentions {title}, but it does not read like a major traveler-facing disruption."
+
+    return f"The retrieved news says {title}" + (f": {snippet}" if snippet else ".")
+
+
+def _news_item_answers_question(question: str, item: Dict[str, Any] | None) -> bool:
+    text = _news_text(item)
+    if not text:
+        return False
+
+    if _is_duration_question(question):
+        return _contains_schedule_signal(text)
+    if _is_location_question(question):
+        return _extract_place_phrase(text) is not None
+    if _is_disruption_question(question):
+        return True
+    return bool(_tokenize_for_followup(question) & _tokenize_for_followup(text))
+
+
+async def _answer_news_followup(place: str, question: str, last_reply: Optional[str]) -> Dict[str, Any]:
+    items, err = get_news_items(place)
+    if err:
+        final = f"I could not retrieve current news for {place} right now."
+        return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": []}
+
+    matched_item = _match_news_item(question, last_reply, items)
+    need_targeted_search = not _news_item_answers_question(question, matched_item)
+
+    targeted_query = None
+    targeted_items: List[Dict[str, Any]] = []
+    targeted_match: Dict[str, Any] | None = None
+    targeted_query = _build_news_targeted_query(place, question, matched_item, last_reply)
+    targeted_err = ""
+    if need_targeted_search:
+        targeted_items, targeted_err = search_news(targeted_query, place)
+        targeted_match = _match_news_item(question, last_reply, targeted_items)
+
+    evidence = {
+        "mode": "news_followup",
+        "question": question,
+        "current_news_items": items[:3],
+        "matched_current_item": matched_item,
+        "used_targeted_search": need_targeted_search,
+        "targeted_search_query": targeted_query if need_targeted_search else None,
+        "targeted_search_error": targeted_err or None,
+        "targeted_news_items": targeted_items[:3],
+        "matched_targeted_item": targeted_match,
+        "current_item_answers_question": _news_item_answers_question(question, matched_item),
+        "targeted_item_answers_question": _news_item_answers_question(question, targeted_match),
+    }
+    final = await _run_followup_reasoner(place=place, question=question, evidence=evidence)
+    if not final:
+        final = f"The retrieved news for {place} does not specify the answer to that question."
+    return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": [{"type": "news"}]}
+
+
+def _detect_weather_horizon(question: str) -> str:
+    q = (question or "").lower()
+    for day in ("today", "tomorrow", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"):
+        if day in q:
+            return day
+    if "next week" in q:
+        return "next week"
+    return "today"
+
+
+async def _answer_weather_followup(place: str, question: str) -> Dict[str, Any]:
+    horizon = _detect_weather_horizon(question)
+    summary, err = get_weather_summary(place, horizon)
+    sources = [{"type": "weather"}]
+
+    if not summary:
+        line, line_err = get_weather_line(place)
+        if line:
+            evidence = {
+                "mode": "weather_followup",
+                "question": question,
+                "requested_horizon": horizon,
+                "weather_snapshot": line,
+                "weather_summary": None,
+            }
+            final = await _run_followup_reasoner(place=place, question=question, evidence=evidence)
+            if not final:
+                final = f"The current weather snapshot for {place} is {line}."
+            return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": sources}
+        final = f"I could not retrieve current weather data for {place} right now."
+        if err or line_err:
+            final = final
+        return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": []}
+
+    evidence = {
+        "mode": "weather_followup",
+        "question": question,
+        "requested_horizon": horizon,
+        "weather_summary": summary,
+        "weather_snapshot": None,
+    }
+    final = await _run_followup_reasoner(place=place, question=question, evidence=evidence)
+    if not final:
+        final = f"The current weather data for {place} does not specify that detail."
+    return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": sources}
+
+
 def _build_policy_lines(
     *,
     place: str,
@@ -292,6 +570,30 @@ async def run_agent(
     answer_mode = classify_answer_mode(question, last_reply)
     origin = extract_origin(question)
     route_or_transport = asks_route_or_transport(question)
+
+    if answer_mode == "news_followup":
+        result = await _answer_news_followup(place, question or "", last_reply)
+        await mark_tools_called(
+            session_id,
+            tool_names=[],
+            user_message=question,
+            agent_reply=result["final"],
+        )
+        if debug:
+            result["debug"] = []
+        return result
+
+    if answer_mode == "weather_followup":
+        result = await _answer_weather_followup(place, question or "")
+        await mark_tools_called(
+            session_id,
+            tool_names=[],
+            user_message=question,
+            agent_reply=result["final"],
+        )
+        if debug:
+            result["debug"] = []
+        return result
 
     if answer_mode == "journey_planning" and needs_origin_clarification(question, last_reply):
         clarification = (
