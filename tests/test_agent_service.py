@@ -786,6 +786,109 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["final"], "I couldn't find a confirmed answer in the current news for Cebu.")
 
+    async def test_general_followup_does_not_pass_concern_summary_into_qa_evidence(self) -> None:
+        brief = {
+            "place": "Batanes",
+            "final": "Batanes looks fine for travel this weekend.",
+            "risk_level": "low",
+            "travel_advice": ["Stay hydrated."],
+            "sources": [{"type": "weather"}],
+            "weather_summary": {"current": {"weather_text": "Overcast"}, "day": {}},
+            "weather_reasons": ["Warm temperatures."],
+            "news_reasons": [],
+            "news_items": [],
+        }
+
+        async def inspect_plan(_llm, *, place, question, evidence):
+            self.assertEqual(place, "Batanes")
+            self.assertEqual(question, "Do you have a list of resorts with aircon?")
+            place_evidence = evidence["place_evidence"]
+            self.assertNotIn("risk_level", place_evidence)
+            self.assertNotIn("final", place_evidence)
+            self.assertNotIn("travel_advice", place_evidence)
+            return {"answered": False, "answer": "", "search_query": "Batanes resorts with aircon"}
+
+        targeted_items = [
+            {
+                "title": "Batanes resort with air-conditioned rooms",
+                "snippet": "A local resort listing mentions air-conditioned rooms in Basco.",
+                "link": "https://example.com/batanes-aircon",
+            }
+        ]
+
+        with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, "Traveling to Batanes this weekend is considered a good idea."))):
+            with patch(
+                "app.agent.agent_service.get_recent_turns",
+                new=AsyncMock(return_value=[{"user": "Is going there this weekend a good idea?", "assistant": "Traveling to Batanes this weekend is considered a good idea."}]),
+            ):
+                with patch("app.agent.agent_service.get_active_destination", new=AsyncMock(return_value="Batanes")):
+                    with patch("app.agent.agent_service.get_pending_agent_context", new=AsyncMock(return_value=None)):
+                        with patch("app.agent.agent_service.get_pending_journey_question", new=AsyncMock(return_value=None)):
+                            with patch("app.agent.agent_service._resolve_answer_mode", new=AsyncMock(return_value="travel_brief")):
+                                with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
+                                    with patch("app.agent.agent_service.set_active_destination", new=AsyncMock(return_value=None)):
+                                        with patch("app.agent.followup_qa.build_travel_brief", return_value=(brief, "")):
+                                            with patch("app.agent.followup_qa._plan_followup_action", new=inspect_plan):
+                                                with patch("app.agent.followup_qa.search_news", return_value=(targeted_items, "")) as search_mock:
+                                                    with patch(
+                                                        "app.agent.followup_qa._run_followup_reasoner",
+                                                        new=AsyncMock(return_value="Yes. I found at least one resort listing in Batanes that mentions air-conditioned rooms. Source: https://example.com/batanes-aircon"),
+                                                    ):
+                                                        result = await run_agent(
+                                                            session_id="session-batanes-aircon",
+                                                            place="Batanes",
+                                                            question="Do you have a list of resorts with aircon?",
+                                                        )
+
+        self.assertIn("yes.", result["final"].lower())
+        self.assertIn("source: https://example.com/batanes-aircon", result["final"].lower())
+        self.assertIsNone(result["risk_level"])
+        self.assertEqual(result["travel_advice"], [])
+        search_mock.assert_called_once()
+
+    async def test_general_followup_resort_question_does_not_fall_back_to_travel_recap(self) -> None:
+        brief = {
+            "place": "Batanes",
+            "final": "Batanes looks fine for travel this weekend.",
+            "risk_level": "low",
+            "travel_advice": ["Stay hydrated."],
+            "sources": [{"type": "weather"}],
+            "weather_summary": {"current": {"weather_text": "Overcast"}, "day": {}},
+            "weather_reasons": ["Warm temperatures."],
+            "news_reasons": [],
+            "news_items": [],
+        }
+        with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, "Traveling to Batanes this weekend is considered a good idea."))):
+            with patch(
+                "app.agent.agent_service.get_recent_turns",
+                new=AsyncMock(return_value=[{"user": "Is going there this weekend a good idea?", "assistant": "Traveling to Batanes this weekend is considered a good idea."}]),
+            ):
+                with patch("app.agent.agent_service.get_active_destination", new=AsyncMock(return_value="Batanes")):
+                    with patch("app.agent.agent_service.get_pending_agent_context", new=AsyncMock(return_value=None)):
+                        with patch("app.agent.agent_service.get_pending_journey_question", new=AsyncMock(return_value=None)):
+                            with patch("app.agent.agent_service._resolve_answer_mode", new=AsyncMock(return_value="travel_brief")):
+                                with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
+                                    with patch("app.agent.agent_service.set_active_destination", new=AsyncMock(return_value=None)):
+                                        with patch("app.agent.followup_qa.build_travel_brief", return_value=(brief, "")):
+                                            with patch(
+                                                "app.agent.followup_qa._plan_followup_action",
+                                                new=AsyncMock(return_value={"answered": False, "answer": "", "search_query": "Batanes resorts aircon"}),
+                                            ):
+                                                with patch("app.agent.followup_qa.search_news", return_value=([], "")):
+                                                    with patch(
+                                                        "app.agent.followup_qa._run_followup_reasoner",
+                                                        new=AsyncMock(return_value="I couldn't find a confirmed list of Batanes resorts with air conditioning from the data I gathered so far."),
+                                                    ):
+                                                        result = await run_agent(
+                                                            session_id="session-batanes-resorts",
+                                                            place="Batanes",
+                                                            question="Do you have a list of resorts?",
+                                                        )
+
+        self.assertIn("couldn't find a confirmed list", result["final"].lower())
+        self.assertNotIn("risk level", result["final"].lower())
+        self.assertNotIn("stay hydrated", result["final"].lower())
+
 
 if __name__ == "__main__":
     unittest.main()
