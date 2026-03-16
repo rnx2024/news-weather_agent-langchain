@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
-from app.news.serpapi_news_fetcher import fetch_news_items, search_news_items
+from app.news.serpapi_news_fetcher import fetch_news_items
+from app.news.tavily_search_fetcher import search_tavily
 
 
 def get_news_items(place: str) -> Tuple[List[Dict[str, Any]], str]:
@@ -14,7 +15,7 @@ def get_news_items(place: str) -> Tuple[List[Dict[str, Any]], str]:
 
 def search_news(query: str, place_hint: str | None = None) -> Tuple[List[Dict[str, Any]], str]:
     """
-    Targeted follow-up news search that keeps the same normalized response
-    shape as the default place-based news lookup.
+    Targeted follow-up search for missing facts in QA turns.
+    This is intentionally separate from the destination news feed.
     """
-    return search_news_items(query, place_hint)
+    return search_tavily(query, place_hint)

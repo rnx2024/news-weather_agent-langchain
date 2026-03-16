@@ -1,6 +1,6 @@
 import unittest
 
-from app.agent.agent_policy import classify_answer_mode, extract_origin
+from app.agent.agent_policy import asks_route_or_transport, classify_answer_mode, extract_origin
 
 
 class AgentPolicyTests(unittest.TestCase):
@@ -39,6 +39,10 @@ class AgentPolicyTests(unittest.TestCase):
         origin = extract_origin("Ilocos Sur", "Where are you traveling from?")
         self.assertEqual(origin, "Ilocos Sur")
 
+    def test_extract_origin_from_transport_choice_question(self) -> None:
+        origin = extract_origin("Should I take a ferry or plane from Ilocos Sur?")
+        self.assertEqual(origin, "Ilocos Sur")
+
     def test_classify_news_duration_followup_from_last_reply(self) -> None:
         mode = classify_answer_mode(
             "I will go on Saturday. Will the vaccination last until Saturday?",
@@ -52,6 +56,13 @@ class AgentPolicyTests(unittest.TestCase):
             "Expect moderate rain with temperatures around 24-30°C and some rain-related delays possible.",
         )
         self.assertEqual(mode, "weather_followup")
+
+    def test_classify_transport_choice_question_as_journey_planning(self) -> None:
+        mode = classify_answer_mode("Should I take a ferry or plane from Ilocos Sur?")
+        self.assertEqual(mode, "journey_planning")
+
+    def test_detect_transport_choice_question(self) -> None:
+        self.assertTrue(asks_route_or_transport("Should I take a ferry or plane from Ilocos Sur?"))
 
 
 if __name__ == "__main__":

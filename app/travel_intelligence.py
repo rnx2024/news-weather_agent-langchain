@@ -22,6 +22,50 @@ _DISRUPTION_NEWS_TERMS = (
     "rail",
 )
 
+_TRAVEL_CONTEXT_TERMS = (
+    "airport",
+    "flight",
+    "ferry",
+    "port",
+    "terminal",
+    "bus",
+    "train",
+    "rail",
+    "road",
+    "highway",
+    "traffic",
+    "tourist",
+    "tourism",
+    "hotel",
+    "resort",
+    "beach",
+    "attraction",
+)
+
+_EVENT_TERMS = (
+    "event",
+    "festival",
+    "concert",
+    "race",
+    "marathon",
+    "ironman",
+    "parade",
+    "celebration",
+)
+
+_LOW_SIGNAL_NEWS_TERMS = (
+    "cash aid",
+    "job program",
+    "livelihood",
+    "scholarship",
+    "research",
+    "ordinance",
+    "beneficiaries",
+    "senior citizens",
+    "to get p",
+    "to receive p",
+)
+
 
 def score_weather_risk(summary: Any) -> tuple[int, List[str]]:
     if not summary:
@@ -86,21 +130,40 @@ def filter_relevant_news_items(place: str, headlines: List[Dict[str, Any]]) -> L
         return []
 
     place_lc = (place or "").strip().lower()
-    if not place_lc:
-        return headlines
+    scored_items: List[tuple[int, Dict[str, Any]]] = []
 
-    relevant_items: List[Dict[str, Any]] = []
     for item in headlines:
         title = str(item.get("title") or "")
         snippet = str(item.get("snippet") or "")
         blob = f"{title} {snippet}".strip().lower()
-        if place_lc in blob:
-            relevant_items.append(item)
 
-    # SerpAPI results were already queried for the selected place. If the snippet
-    # omits the exact place string, keep the original results rather than losing
-    # potentially relevant disruption details.
-    return relevant_items or headlines
+        mentions_place = place_lc in blob if place_lc else True
+        has_disruption = any(term in blob for term in (*_SEVERE_NEWS_TERMS, *_DISRUPTION_NEWS_TERMS))
+        has_travel_context = any(term in blob for term in _TRAVEL_CONTEXT_TERMS)
+        has_event_context = any(term in blob for term in _EVENT_TERMS)
+        has_low_signal = any(term in blob for term in _LOW_SIGNAL_NEWS_TERMS)
+
+        if has_low_signal and not has_disruption and not has_event_context:
+            continue
+
+        score = 0
+        if mentions_place:
+            score += 1
+        if has_disruption:
+            score += 4
+        if has_travel_context:
+            score += 2
+        if has_event_context:
+            score += 1
+
+        if score > 0:
+            scored_items.append((score, item))
+
+    if not scored_items:
+        return []
+
+    scored_items.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in scored_items[:3]]
 
 
 def score_news_risk(place: str, headlines: List[Dict[str, Any]]) -> tuple[int, List[str]]:

@@ -211,6 +211,33 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("source: https://example.com/roadworks", result["final"].lower())
 
+    async def test_journey_transport_search_uses_user_question_terms(self) -> None:
+        brief = {
+            "place": "Davao",
+            "final": "Davao looks generally fine for travel today.",
+            "risk_level": "low",
+            "travel_advice": [],
+            "sources": [{"type": "weather"}, {"type": "news"}],
+            "weather_summary": {"current": {"weather_text": "Broken clouds"}, "day": {}},
+            "weather_reasons": [],
+            "news_reasons": [],
+            "news_items": [],
+        }
+        with patch("app.agent.followup_qa.build_travel_brief", return_value=(brief, "")):
+            with patch("app.agent.followup_qa.search_news", return_value=([], "")) as search_mock:
+                with patch("app.agent.followup_qa._run_journey_reasoner", new=AsyncMock(return_value="")):
+                    await run_agent(
+                        session_id="session-journey-query",
+                        place="Davao",
+                        question="Should I take a ferry or plane from Ilocos Sur?",
+                    )
+
+        search_query = search_mock.call_args.args[0]
+        self.assertIn("ferry", search_query.lower())
+        self.assertIn("plane", search_query.lower())
+        self.assertIn("ilocos", search_query.lower())
+        self.assertIn("davao", search_query.lower())
+
     async def test_news_followup_duration_uses_targeted_search_and_direct_answer(self) -> None:
         initial_items = [
             {
