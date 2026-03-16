@@ -26,10 +26,10 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         ]
         with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, None))):
             with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
-                with patch("app.agent.agent_service.get_news_items", return_value=(initial_items, "")):
-                    with patch("app.agent.agent_service.search_news", return_value=(targeted_items, "")) as search_mock:
+                with patch("app.agent.followup_qa.get_news_items", return_value=(initial_items, "")):
+                    with patch("app.agent.followup_qa.search_news", return_value=(targeted_items, "")) as search_mock:
                         with patch(
-                            "app.agent.agent_service._run_followup_reasoner",
+                            "app.agent.followup_qa._run_followup_reasoner",
                             new=AsyncMock(
                                 return_value="The retrieved reporting does not confirm that the PISTON strike is in Vigan."
                             ),
@@ -62,9 +62,9 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         ]
         with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, None))):
             with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
-                with patch("app.agent.agent_service.get_news_items", return_value=(initial_items, "")):
+                with patch("app.agent.followup_qa.get_news_items", return_value=(initial_items, "")):
                     with patch(
-                        "app.agent.agent_service._run_followup_reasoner",
+                        "app.agent.followup_qa._run_followup_reasoner",
                         new=AsyncMock(
                             return_value=(
                                 "The retrieved reporting does not specify any possible disruptions. "
@@ -114,6 +114,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["final"], "Land travel looks practical right now.")
         journey_mock.assert_awaited_once_with(
+            unittest.mock.ANY,
             "La Union",
             "What's the best transport to go there?",
             "Ilocos Sur",
@@ -132,9 +133,9 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
             "news_reasons": [],
             "news_items": [],
         }
-        with patch("app.agent.agent_service.build_travel_brief", return_value=(brief, "")):
-            with patch("app.agent.agent_service.search_news", return_value=([], "")):
-                with patch("app.agent.agent_service._run_journey_reasoner", new=AsyncMock(return_value="")):
+        with patch("app.agent.followup_qa.build_travel_brief", return_value=(brief, "")):
+            with patch("app.agent.followup_qa.search_news", return_value=([], "")):
+                with patch("app.agent.followup_qa._run_journey_reasoner", new=AsyncMock(return_value="")):
                     result = await run_agent(
                         session_id="session-journey-fallback",
                         place="La Union",
@@ -163,10 +164,10 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
                 }
             ],
         }
-        with patch("app.agent.agent_service.build_travel_brief", return_value=(brief, "")):
-            with patch("app.agent.agent_service.search_news", return_value=([], "")):
+        with patch("app.agent.followup_qa.build_travel_brief", return_value=(brief, "")):
+            with patch("app.agent.followup_qa.search_news", return_value=([], "")):
                 with patch(
-                    "app.agent.agent_service._run_journey_reasoner",
+                    "app.agent.followup_qa._run_journey_reasoner",
                     new=AsyncMock(return_value="You may want to check the article for the latest roadworks details."),
                 ):
                     result = await run_agent(
@@ -202,10 +203,10 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, prior_reply))):
             with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
-                with patch("app.agent.agent_service.get_news_items", return_value=(initial_items, "")):
-                    with patch("app.agent.agent_service.search_news", return_value=(targeted_items, "")) as search_mock:
+                with patch("app.agent.followup_qa.get_news_items", return_value=(initial_items, "")):
+                    with patch("app.agent.followup_qa.search_news", return_value=(targeted_items, "")) as search_mock:
                         with patch(
-                            "app.agent.agent_service._run_followup_reasoner",
+                            "app.agent.followup_qa._run_followup_reasoner",
                             new=AsyncMock(
                                 return_value="Based on the retrieved update, the vaccination drive is scheduled to continue through Saturday afternoon."
                             ),
@@ -241,10 +242,10 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, prior_reply))):
             with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
-                with patch("app.agent.agent_service.get_news_items", return_value=(initial_items, "")):
-                    with patch("app.agent.agent_service.search_news", return_value=([], "")):
+                with patch("app.agent.followup_qa.get_news_items", return_value=(initial_items, "")):
+                    with patch("app.agent.followup_qa.search_news", return_value=([], "")):
                         with patch(
-                            "app.agent.agent_service._run_followup_reasoner",
+                            "app.agent.followup_qa._run_followup_reasoner",
                             new=AsyncMock(
                                 return_value=(
                                     "Davao looks generally fine for travel today, with a low risk level. "
@@ -276,9 +277,9 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         ]
         with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, None))):
             with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
-                with patch("app.agent.agent_service.get_news_items", return_value=(initial_items, "")):
+                with patch("app.agent.followup_qa.get_news_items", return_value=(initial_items, "")):
                     with patch(
-                        "app.agent.agent_service._run_followup_reasoner",
+                        "app.agent.followup_qa._run_followup_reasoner",
                         new=AsyncMock(
                             return_value=(
                                 "The retrieved reporting does not specify any possible disruptions. "
@@ -297,9 +298,9 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_weather_followup_softens_robotic_language(self) -> None:
         with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, None))):
             with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
-                with patch("app.agent.agent_service.get_weather_summary", return_value=("Broken clouds with a temperature of 25.78C.", "")):
+                with patch("app.agent.followup_qa.get_weather_summary", return_value=("Broken clouds with a temperature of 25.78C.", "")):
                     with patch(
-                        "app.agent.agent_service._run_followup_reasoner",
+                        "app.agent.followup_qa._run_followup_reasoner",
                         new=AsyncMock(
                             return_value=(
                                 "The retrieved weather data for La Union shows broken clouds with a temperature of 25.78C, "
@@ -321,9 +322,9 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         prior_reply = "Recent local reporting mentions a weekend event in Cebu."
         with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, prior_reply))):
             with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
-                with patch("app.agent.agent_service.get_news_items", return_value=([], "")):
-                    with patch("app.agent.agent_service.search_news", return_value=([], "")):
-                        with patch("app.agent.agent_service._run_followup_reasoner", new=AsyncMock(return_value="")):
+                with patch("app.agent.followup_qa.get_news_items", return_value=([], "")):
+                    with patch("app.agent.followup_qa.search_news", return_value=([], "")):
+                        with patch("app.agent.followup_qa._run_followup_reasoner", new=AsyncMock(return_value="")):
                             result = await run_agent(
                                 session_id="session-no-answer-news",
                                 place="Cebu",
