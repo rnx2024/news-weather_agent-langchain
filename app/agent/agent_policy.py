@@ -105,6 +105,84 @@ _ORIGIN_QUESTION_TERMS = (
     "what is your departure location",
 )
 
+_FOLLOWUP_CONTINUATION_TERMS = (
+    "last",
+    "still",
+    "continue",
+    "continuing",
+    "remain",
+    "until",
+    "ongoing",
+    "on saturday",
+    "on sunday",
+    "on monday",
+    "on tuesday",
+    "on wednesday",
+    "on thursday",
+    "on friday",
+    "next week",
+    "this weekend",
+)
+
+_STOPWORDS = {
+    "about",
+    "after",
+    "again",
+    "also",
+    "and",
+    "any",
+    "are",
+    "before",
+    "between",
+    "campaign",
+    "city",
+    "could",
+    "does",
+    "fine",
+    "from",
+    "generally",
+    "going",
+    "have",
+    "here",
+    "into",
+    "just",
+    "know",
+    "last",
+    "local",
+    "look",
+    "looks",
+    "make",
+    "more",
+    "most",
+    "need",
+    "news",
+    "reported",
+    "reporting",
+    "risk",
+    "saturday",
+    "should",
+    "some",
+    "that",
+    "there",
+    "they",
+    "this",
+    "those",
+    "through",
+    "time",
+    "today",
+    "travel",
+    "trip",
+    "until",
+    "very",
+    "what",
+    "when",
+    "where",
+    "which",
+    "will",
+    "with",
+    "would",
+}
+
 
 def _has_any_term(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
@@ -206,9 +284,6 @@ def classify_answer_mode(question: Optional[str], last_reply: Optional[str] = No
     if is_journey_planning_question(question):
         return "journey_planning"
 
-    if is_trip_planning_question(question) or _has_any_term(q, _TRAVEL_BRIEF_TERMS):
-        return "travel_brief"
-
     has_weather = _has_any_term(q, _WEATHER_TERMS)
     has_news = _has_any_term(q, _NEWS_TERMS)
 
@@ -221,10 +296,18 @@ def classify_answer_mode(question: Optional[str], last_reply: Optional[str] = No
         elif _has_any_term(last, _ORIGIN_QUESTION_TERMS):
             return "journey_planning"
 
+    if not has_weather and not has_news:
+        if _looks_like_news_followup(q, last):
+            has_news = True
+        elif _looks_like_weather_followup(q, last):
+            has_weather = True
+
     if has_news and not has_weather:
         return "news_followup"
     if has_weather and not has_news:
         return "weather_followup"
+    if is_trip_planning_question(question) or _has_any_term(q, _TRAVEL_BRIEF_TERMS):
+        return "travel_brief"
     return "travel_brief"
 
 
@@ -288,3 +371,33 @@ def _clean_location_fragment(fragment: str) -> str | None:
     cleaned = re.split(r"[?.!,;]| by | via | using ", fragment, maxsplit=1, flags=re.IGNORECASE)[0].strip()
     cleaned = re.sub(r"^(the)\s+", "", cleaned, flags=re.IGNORECASE).strip()
     return cleaned or None
+
+
+def _token_overlap(a: str, b: str) -> set[str]:
+    a_tokens = {token for token in re.findall(r"[a-z]{4,}", a.lower()) if token not in _STOPWORDS}
+    b_tokens = {token for token in re.findall(r"[a-z]{4,}", b.lower()) if token not in _STOPWORDS}
+    return a_tokens & b_tokens
+
+
+def _looks_like_news_followup(question: str, last_reply: str) -> bool:
+    if not last_reply:
+        return False
+    last_lc = last_reply.lower()
+    if "recent local reporting" in last_lc or "retrieved news" in last_lc or _has_any_term(last_lc, _NEWS_TERMS):
+        if _token_overlap(question, last_reply):
+            return True
+        if _has_any_term(question, _FOLLOWUP_CONTINUATION_TERMS):
+            return True
+    return False
+
+
+def _looks_like_weather_followup(question: str, last_reply: str) -> bool:
+    if not last_reply:
+        return False
+    last_lc = last_reply.lower()
+    if _has_any_term(last_lc, _WEATHER_TERMS):
+        if _token_overlap(question, last_reply):
+            return True
+        if _has_any_term(question, _FOLLOWUP_CONTINUATION_TERMS):
+            return True
+    return False
