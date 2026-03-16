@@ -362,6 +362,39 @@ def _soften_followup_tone(final: str, place: str) -> str:
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
+def _condense_direct_answer(final: str) -> str:
+    text = (final or "").strip()
+    if not text:
+        return text
+
+    parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+    if len(parts) <= 2:
+        return text
+
+    generic_patterns = (
+        re.compile(r"\blooks generally fine for travel\b", re.IGNORECASE),
+        re.compile(r"\blow risk level\b", re.IGNORECASE),
+        re.compile(r"\brecent local reporting highlights\b", re.IGNORECASE),
+        re.compile(r"\bcurrent news scan did not surface\b", re.IGNORECASE),
+        re.compile(r"\brisk level\b", re.IGNORECASE),
+    )
+    answer_patterns = (
+        re.compile(r"\b(?:not specified|doesn't say|does not say|doesn't confirm|does not confirm)\b", re.IGNORECASE),
+        re.compile(r"\b(?:through|until|scheduled|expected|continues?|lasting|runs?)\b", re.IGNORECASE),
+        re.compile(r"\b(?:yes|no)\b", re.IGNORECASE),
+        re.compile(r"\b(?:i don't see|i can'?t|can'?t answer|cannot answer)\b", re.IGNORECASE),
+    )
+
+    non_generic = [part for part in parts if not any(pattern.search(part) for pattern in generic_patterns)]
+    direct = [part for part in non_generic if any(pattern.search(part) for pattern in answer_patterns)]
+
+    if direct:
+        return " ".join(direct[:2]).strip()
+    if non_generic:
+        return " ".join(non_generic[:2]).strip()
+    return " ".join(parts[:2]).strip()
+
+
 def _is_duration_question(question: str) -> bool:
     q = (question or "").lower()
     return any(term in q for term in ("until", "last", "still", "continue", "ongoing", "on saturday", "on sunday"))
@@ -554,6 +587,7 @@ async def _answer_journey_question(
         else:
             final = "I can't answer that confidently from the data I gathered so far."
     final = _soften_followup_tone(final, place)
+    final = _condense_direct_answer(final)
     final = _append_followup_link_if_needed(final, evidence)
     sources = [{"type": "weather"}, {"type": "news"}]
     return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": sources}
@@ -594,6 +628,7 @@ async def _answer_news_followup(place: str, question: str, last_reply: Optional[
     if not final:
         final = f"The retrieved news for {place} does not specify the answer to that question."
     final = _soften_followup_tone(final, place)
+    final = _condense_direct_answer(final)
     final = _append_followup_link_if_needed(final, evidence)
     return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": [{"type": "news"}]}
 
@@ -627,6 +662,7 @@ async def _answer_weather_followup(place: str, question: str) -> Dict[str, Any]:
             if not final:
                 final = f"The current weather snapshot for {place} is {line}."
             final = _soften_followup_tone(final, place)
+            final = _condense_direct_answer(final)
             return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": sources}
         final = f"I could not retrieve current weather data for {place} right now."
         if err or line_err:
@@ -644,6 +680,7 @@ async def _answer_weather_followup(place: str, question: str) -> Dict[str, Any]:
     if not final:
         final = f"The current weather data for {place} does not specify that detail."
     final = _soften_followup_tone(final, place)
+    final = _condense_direct_answer(final)
     return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": sources}
 
 
