@@ -108,6 +108,25 @@ def _format_recent_turns(recent_turns: List[Dict[str, str]]) -> List[str]:
     return lines
 
 
+def _has_same_destination_followup(
+    *,
+    question: Optional[str],
+    place: str,
+    active_destination: Optional[str],
+    last_reply: Optional[str],
+    recent_turns: List[Dict[str, str]],
+    pending_agent_context: Optional[Dict[str, str]],
+    pending_journey_question: Optional[str],
+) -> bool:
+    if not question or active_destination != place:
+        return False
+    if pending_agent_context or pending_journey_question:
+        return True
+    if recent_turns:
+        return True
+    return bool((last_reply or "").strip())
+
+
 async def _resolve_answer_mode(
     *,
     question: Optional[str],
@@ -285,11 +304,8 @@ def _build_policy_lines(
     common_lines = [
         "- Mention specific locations only if they are explicitly stated in the retrieved news or weather context.",
         "- If evidence is missing or inconclusive, say it is not specified instead of guessing.",
+        "- The selected location from the request is the only destination for this turn. Do NOT treat place names mentioned in the chat as a destination switch.",
     ]
-    if answer_mode != "journey_planning":
-        common_lines.append(
-            f"- If the user's question mentions a different place than '{place}', begin with: \"You asked about <other place> but your selected location is {place}. To get updates for <other place>, change the Location.\" Then answer for {place} only."
-        )
 
     if answer_mode == "news_followup":
         policy_lines.extend(
@@ -377,7 +393,15 @@ async def run_agent(
     effective_question = question
     origin = extract_origin(question, last_reply)
     pending_question = (pending_agent_context or {}).get("question")
-    same_destination_followup = bool(question and active_destination == place and recent_turns)
+    same_destination_followup = _has_same_destination_followup(
+        question=question,
+        place=place,
+        active_destination=active_destination,
+        last_reply=last_reply,
+        recent_turns=recent_turns,
+        pending_agent_context=pending_agent_context,
+        pending_journey_question=pending_journey_question,
+    )
 
     awaiting_origin = (pending_agent_context or {}).get("awaiting") == "origin"
     if awaiting_origin:
