@@ -124,6 +124,13 @@ _FOLLOWUP_CONTINUATION_TERMS = (
     "this weekend",
 )
 
+_CONTEXT_REFERENCE_TERMS = (
+    "that",
+    "this",
+    "it",
+    "there",
+)
+
 _STOPWORDS = {
     "about",
     "after",
@@ -309,6 +316,29 @@ def classify_answer_mode(question: Optional[str], last_reply: Optional[str] = No
     if is_trip_planning_question(question) or _has_any_term(q, _TRAVEL_BRIEF_TERMS):
         return "travel_brief"
     return "travel_brief"
+
+
+def needs_followup_reference_clarification(question: Optional[str], last_reply: Optional[str] = None) -> bool:
+    if not question or last_reply:
+        return False
+
+    q = question.lower()
+    if not any(re.search(rf"\b{re.escape(term)}\b", q) for term in _CONTEXT_REFERENCE_TERMS):
+        return False
+
+    relevance_terms = (
+        "what does",
+        "what is",
+        "how does",
+        "how is",
+        "why does",
+        "why is",
+        "affect",
+        "impact",
+        "matter",
+        "has to do with",
+    )
+    return any(term in q for term in relevance_terms)
 
 
 def is_journey_planning_question(q: Optional[str]) -> bool:
