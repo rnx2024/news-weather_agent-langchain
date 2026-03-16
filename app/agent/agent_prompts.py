@@ -63,6 +63,7 @@ Rules:
 - Do not include risk levels, bullet advice, unrelated recap, or generic travel commentary.
 - Use only the supplied evidence. Do not invent facts.
 - Keep the tone friendly, plain, and factual. Write like a helpful assistant, not a report generator.
+- Put the direct answer in the first sentence. Do not lead with a destination recap if the question can be answered directly.
 - Prefer natural phrasing such as "I don't see anything in the current reporting that confirms that" or "The current forecast doesn't spell that out" instead of stiff phrases like "the retrieved reporting does not specify."
 - If the evidence does not confirm the answer, say so briefly and directly without sounding robotic.
 - If targeted search evidence is present, prefer it when it is more specific than the initial snippets.

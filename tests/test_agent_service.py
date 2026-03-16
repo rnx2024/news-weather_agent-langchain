@@ -222,6 +222,44 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("through saturday afternoon", result["final"].lower())
         search_mock.assert_called_once()
 
+    async def test_news_followup_condenses_generic_recap_when_direct_answer_is_present(self) -> None:
+        initial_items = [
+            {
+                "title": "IRONMAN 70.3 Davao event draws local and foreign athletes",
+                "snippet": "The event report does not include an end date in the initial item.",
+                "source": "Local News",
+                "date": "2026-03-16T05:00:00+00:00",
+                "link": "https://example.com/ironman-davao",
+            }
+        ]
+        prior_reply = (
+            "Davao currently presents a low travel risk, with generally favorable conditions for a weekend trip. "
+            "However, be aware that the IRONMAN 70.3 Davao event is taking place, which may affect local plans and traffic."
+        )
+        with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, prior_reply))):
+            with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
+                with patch("app.agent.agent_service.get_news_items", return_value=(initial_items, "")):
+                    with patch("app.agent.agent_service.search_news", return_value=([], "")):
+                        with patch(
+                            "app.agent.agent_service._run_followup_reasoner",
+                            new=AsyncMock(
+                                return_value=(
+                                    "Davao looks generally fine for travel today, with a low risk level. "
+                                    "Recent local reporting highlights the IRONMAN 70.3 Davao event. "
+                                    "The current reporting does not say whether it will still be running this weekend."
+                                )
+                            ),
+                        ):
+                            result = await run_agent(
+                                session_id="session-condense-news",
+                                place="Davao",
+                                question="Do you know how long IRONMAN will last? Will it be until this weekend?",
+                            )
+
+        self.assertIn("does not say whether it will still be running this weekend", result["final"].lower())
+        self.assertNotIn("looks generally fine for travel today", result["final"].lower())
+        self.assertNotIn("low risk level", result["final"].lower())
+
     async def test_news_followup_appends_source_link_when_answer_references_article(self) -> None:
         initial_items = [
             {
