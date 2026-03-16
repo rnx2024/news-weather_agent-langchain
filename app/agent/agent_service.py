@@ -10,7 +10,7 @@ from langgraph.prebuilt import create_react_agent
 
 from app.settings import settings
 from app.agent.agent_tools import weather_tool, news_tool, news_search_tool, city_risk_tool, travel_brief_tool
-from app.agent.agent_prompts import LOCAL_INTELLIGENCE_SYSTEM_PROMPT
+from app.agent.agent_prompts import ANSWER_MODE_ROUTER_SYSTEM_PROMPT, LOCAL_INTELLIGENCE_SYSTEM_PROMPT
 from app.agent.followup_qa import (
     answer_journey_question as _answer_journey_question,
     answer_news_followup as _answer_news_followup,
@@ -20,8 +20,11 @@ from app.agent.followup_qa import (
 # session memory (Redis-backed)
 from app.session.session_cache import (
     get_last_exchange,
+    get_pending_agent_context,
+    get_recent_turns,
     get_pending_journey_question,
     mark_tools_called,
+    set_pending_agent_context,
     set_pending_journey_question,
     should_include,
 )
@@ -85,6 +88,58 @@ def _build_user_prompt(place: str, question: Optional[str], origin: Optional[str
         parts.append(f"Journey origin: {origin}\n")
     parts.append("Answer as ONE concise travel-oriented paragraph, plain text.")
     return "".join(parts)
+
+
+def _format_recent_turns(recent_turns: List[Dict[str, str]]) -> List[str]:
+    if not recent_turns:
+        return []
+
+    lines = ["- Recent conversation context:"]
+    for turn in recent_turns[-4:]:
+        user_text = str(turn.get("user") or "").strip()
+        assistant_text = str(turn.get("assistant") or "").strip()
+        if user_text:
+            lines.append(f"  - User: {user_text}")
+        if assistant_text:
+            lines.append(f"  - Assistant: {assistant_text}")
+    return lines
+
+
+async def _resolve_answer_mode(
+    *,
+    question: Optional[str],
+    last_reply: Optional[str],
+    recent_turns: List[Dict[str, str]],
+    pending_agent_context: Optional[Dict[str, str]],
+    place: str,
+) -> AnswerMode:
+    fallback = classify_answer_mode(question, last_reply)
+    if not question or not recent_turns:
+        return fallback
+
+    evidence = {
+        "selected_location": place,
+        "latest_question": question,
+        "last_reply": last_reply,
+        "recent_turns": recent_turns[-4:],
+        "pending_agent_context": pending_agent_context or {},
+        "allowed_modes": ["travel_brief", "news_followup", "weather_followup", "journey_planning"],
+    }
+    try:
+        response = await _llm.ainvoke(
+            [
+                {"role": "system", "content": ANSWER_MODE_ROUTER_SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(evidence, ensure_ascii=True, indent=2)},
+            ]
+        )
+        payload = json.loads(str(getattr(response, "content", "") or "").strip())
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return fallback
+
+    mode = str(payload.get("mode") or "").strip()
+    if mode in {"travel_brief", "news_followup", "weather_followup", "journey_planning"}:
+        return cast(AnswerMode, mode)
+    return fallback
 
 
 def _extract_final_message(messages: List[BaseMessage]) -> str:
@@ -206,6 +261,7 @@ def _build_policy_lines(
     include_news: bool,
     last_user: Optional[str],
     last_reply: Optional[str],
+    recent_turns: List[Dict[str, str]],
     origin: Optional[str] = None,
     route_or_transport: bool = False,
 ) -> List[str]:
@@ -221,12 +277,16 @@ def _build_policy_lines(
             policy_lines.append(f"  - User: {last_user}")
         if last_reply:
             policy_lines.append(f"  - Assistant: {last_reply}")
+    policy_lines.extend(_format_recent_turns(recent_turns))
 
     common_lines = [
         "- Mention specific locations only if they are explicitly stated in the retrieved news or weather context.",
         "- If evidence is missing or inconclusive, say it is not specified instead of guessing.",
-        f"- If the user's question mentions a different place than '{place}', begin with: \"You asked about <other place> but your selected location is {place}. To get updates for <other place>, change the Location.\" Then answer for {place} only.",
     ]
+    if answer_mode != "journey_planning":
+        common_lines.append(
+            f"- If the user's question mentions a different place than '{place}', begin with: \"You asked about <other place> but your selected location is {place}. To get updates for <other place>, change the Location.\" Then answer for {place} only."
+        )
 
     if answer_mode == "news_followup":
         policy_lines.extend(
@@ -301,13 +361,33 @@ async def run_agent(
     Run the LangGraph ReAct agent with tool gating per request.
     """
     last_user, last_reply = await get_last_exchange(session_id)
+    recent_turns = await get_recent_turns(session_id)
+    pending_agent_context = await get_pending_agent_context(session_id)
     pending_journey_question = await get_pending_journey_question(session_id)
-    resumed_origin = extract_origin(question, last_reply)
     effective_question = question
-    if resumed_origin and "where are you traveling from" in (last_reply or "").lower():
+    origin = extract_origin(question, last_reply)
+    pending_question = (pending_agent_context or {}).get("question")
+
+    awaiting_origin = (pending_agent_context or {}).get("awaiting") == "origin"
+    if awaiting_origin:
+        origin = origin or extract_origin(question, "Where are you traveling from?")
+        if origin:
+            effective_question = pending_question or pending_journey_question or last_user or question
+
+    if origin and "where are you traveling from" in (last_reply or "").lower() and not effective_question:
         effective_question = pending_journey_question or last_user or question
-    answer_mode = classify_answer_mode(effective_question, last_reply)
-    origin = resumed_origin or extract_origin(effective_question, last_reply)
+
+    answer_mode = await _resolve_answer_mode(
+        question=effective_question,
+        last_reply=last_reply,
+        recent_turns=recent_turns,
+        pending_agent_context=pending_agent_context,
+        place=place,
+    )
+    if awaiting_origin and origin and (pending_agent_context or {}).get("mode") == "journey_planning":
+        answer_mode = "journey_planning"
+
+    origin = origin or extract_origin(effective_question, last_reply)
     route_or_transport = asks_route_or_transport(effective_question)
 
     if needs_followup_reference_clarification(question, last_reply):
@@ -330,7 +410,13 @@ async def run_agent(
         return result
 
     if answer_mode == "news_followup":
-        result = await _answer_news_followup(_llm, place, question or "", last_reply)
+        result = await _answer_news_followup(
+            _llm,
+            place,
+            question or "",
+            last_reply,
+            conversation_history=recent_turns,
+        )
         await mark_tools_called(
             session_id,
             tool_names=[],
@@ -342,7 +428,12 @@ async def run_agent(
         return result
 
     if answer_mode == "weather_followup":
-        result = await _answer_weather_followup(_llm, place, question or "")
+        result = await _answer_weather_followup(
+            _llm,
+            place,
+            question or "",
+            conversation_history=recent_turns,
+        )
         await mark_tools_called(
             session_id,
             tool_names=[],
@@ -357,6 +448,15 @@ async def run_agent(
         clarification = (
             f"I can assess conditions in {place}, but I need your departure location to judge the trip itself. "
             "Where are you traveling from?"
+        )
+        await set_pending_agent_context(
+            session_id,
+            {
+                "mode": "journey_planning",
+                "awaiting": "origin",
+                "question": question or "",
+                "destination": place,
+            },
         )
         await set_pending_journey_question(session_id, question)
         await mark_tools_called(
@@ -377,6 +477,7 @@ async def run_agent(
         return result
 
     if answer_mode == "journey_planning" and origin:
+        await set_pending_agent_context(session_id, None)
         await set_pending_journey_question(session_id, None)
         result = await _answer_journey_question(
             _llm,
@@ -384,6 +485,9 @@ async def run_agent(
             effective_question or question or "",
             origin,
             route_or_transport=route_or_transport,
+            latest_user_message=question or "",
+            conversation_history=recent_turns,
+            pending_question=pending_question,
         )
         await mark_tools_called(
             session_id,
@@ -425,6 +529,7 @@ async def run_agent(
         include_news=include_news,
         last_user=last_user,
         last_reply=last_reply,
+        recent_turns=recent_turns,
         origin=origin,
         route_or_transport=route_or_transport,
     )

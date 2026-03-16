@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import time
 import inspect
+import json
 from typing import Any, Awaitable, Callable, Dict, Iterable, Tuple
 
 from app.redis_client import redis
@@ -11,6 +12,10 @@ from app.session.session_keys import DEFAULT_SESSION_TTL, ONE_HOUR, news_key, se
 from redis.exceptions import RedisError
 
 log = logging.getLogger(__name__)
+
+_PENDING_AGENT_CONTEXT_FIELD = "pending_agent_context"
+_RECENT_TURNS_FIELD = "recent_turns"
+_MAX_RECENT_TURNS = 6
 
 
 async def _resolve_compute_value(compute_fn: Callable[[], Awaitable[str] | str]) -> str:
@@ -77,6 +82,15 @@ async def mark_sent(
 
     sk = sess_key(session_id)
     try:
+        recent_turns = await get_recent_turns(session_id)
+        if user_message or agent_reply:
+            recent_turns.append(
+                {
+                    "user": (user_message or "")[:500],
+                    "assistant": (agent_reply or "")[:1000],
+                }
+            )
+            mapping[_RECENT_TURNS_FIELD] = json.dumps(recent_turns[-_MAX_RECENT_TURNS:], ensure_ascii=True)
         await redis.hset(sk, mapping=mapping)
         await redis.expire(sk, ttl_seconds)
     except RedisError as exc:
@@ -104,6 +118,26 @@ async def set_pending_journey_question(
         log.warning("Redis write failed in set_pending_journey_question [session_id=%s]: %s", session_id, exc)
 
 
+async def set_pending_agent_context(
+    session_id: str,
+    context: Dict[str, str] | None,
+    *,
+    ttl_seconds: int = DEFAULT_SESSION_TTL,
+) -> None:
+    if redis is None:
+        return
+
+    sk = sess_key(session_id)
+    try:
+        if context:
+            await redis.hset(sk, mapping={_PENDING_AGENT_CONTEXT_FIELD: json.dumps(context, ensure_ascii=True)})
+            await redis.expire(sk, ttl_seconds)
+        else:
+            await redis.hdel(sk, _PENDING_AGENT_CONTEXT_FIELD)
+    except (RedisError, TypeError, ValueError) as exc:
+        log.warning("Redis write failed in set_pending_agent_context [session_id=%s]: %s", session_id, exc)
+
+
 async def get_pending_journey_question(session_id: str) -> str | None:
     if redis is None:
         return None
@@ -113,6 +147,48 @@ async def get_pending_journey_question(session_id: str) -> str | None:
     except RedisError as exc:
         log.warning("Redis read failed in get_pending_journey_question [session_id=%s]: %s", session_id, exc)
         return None
+
+
+async def get_pending_agent_context(session_id: str) -> Dict[str, str] | None:
+    if redis is None:
+        return None
+    try:
+        raw = await redis.hget(sess_key(session_id), _PENDING_AGENT_CONTEXT_FIELD)
+        if not raw:
+            return None
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        return {str(key): str(value) for key, value in data.items() if value is not None}
+    except (RedisError, ValueError, TypeError) as exc:
+        log.warning("Redis read failed in get_pending_agent_context [session_id=%s]: %s", session_id, exc)
+        return None
+
+
+async def get_recent_turns(session_id: str) -> list[Dict[str, str]]:
+    if redis is None:
+        return []
+    try:
+        raw = await redis.hget(sess_key(session_id), _RECENT_TURNS_FIELD)
+        if not raw:
+            return []
+        data = json.loads(raw)
+        if not isinstance(data, list):
+            return []
+        turns: list[Dict[str, str]] = []
+        for item in data[-_MAX_RECENT_TURNS:]:
+            if not isinstance(item, dict):
+                continue
+            turns.append(
+                {
+                    "user": str(item.get("user") or ""),
+                    "assistant": str(item.get("assistant") or ""),
+                }
+            )
+        return turns
+    except (RedisError, ValueError, TypeError) as exc:
+        log.warning("Redis read failed in get_recent_turns [session_id=%s]: %s", session_id, exc)
+        return []
 
 
 async def mark_tools_called(
