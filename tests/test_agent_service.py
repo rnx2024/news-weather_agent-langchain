@@ -221,6 +221,9 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["sources"], [{"type": "news"}])
         self.assertIn("through saturday afternoon", result["final"].lower())
         search_mock.assert_called_once()
+        search_query = search_mock.call_args.args[0]
+        self.assertIn("vaccination", search_query.lower())
+        self.assertIn("saturday", search_query.lower())
 
     async def test_news_followup_condenses_generic_recap_when_direct_answer_is_present(self) -> None:
         initial_items = [
@@ -259,6 +262,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("does not say whether it will still be running this weekend", result["final"].lower())
         self.assertNotIn("looks generally fine for travel today", result["final"].lower())
         self.assertNotIn("low risk level", result["final"].lower())
+        self.assertEqual(result["final"].count("."), 1)
 
     async def test_news_followup_appends_source_link_when_answer_references_article(self) -> None:
         initial_items = [
@@ -312,6 +316,21 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("the current weather for la union", result["final"].lower())
         self.assertIn("doesn't point to any specific weather disruptions right now", result["final"].lower())
         self.assertNotIn("the retrieved weather data", result["final"].lower())
+
+    async def test_news_followup_no_answer_found_fallback_is_direct(self) -> None:
+        prior_reply = "Recent local reporting mentions a weekend event in Cebu."
+        with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, prior_reply))):
+            with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
+                with patch("app.agent.agent_service.get_news_items", return_value=([], "")):
+                    with patch("app.agent.agent_service.search_news", return_value=([], "")):
+                        with patch("app.agent.agent_service._run_followup_reasoner", new=AsyncMock(return_value="")):
+                            result = await run_agent(
+                                session_id="session-no-answer-news",
+                                place="Cebu",
+                                question="Will that event still be running this weekend?",
+                            )
+
+        self.assertEqual(result["final"], "I couldn't find a confirmed answer in the current news for Cebu.")
 
 
 if __name__ == "__main__":

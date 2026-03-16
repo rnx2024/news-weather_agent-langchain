@@ -26,6 +26,7 @@ from app.agent.agent_policy import (
     decide_tool_includes,
     detect_force_signals,
     extract_origin,
+    needs_followup_reference_clarification,
     needs_origin_clarification,
 )
 
@@ -368,7 +369,7 @@ def _condense_direct_answer(final: str) -> str:
         return text
 
     parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
-    if len(parts) <= 2:
+    if len(parts) <= 1:
         return text
 
     generic_patterns = (
@@ -389,10 +390,10 @@ def _condense_direct_answer(final: str) -> str:
     direct = [part for part in non_generic if any(pattern.search(part) for pattern in answer_patterns)]
 
     if direct:
-        return " ".join(direct[:2]).strip()
+        return direct[0].strip()
     if non_generic:
-        return " ".join(non_generic[:2]).strip()
-    return " ".join(parts[:2]).strip()
+        return non_generic[0].strip()
+    return parts[0].strip()
 
 
 def _is_duration_question(question: str) -> bool:
@@ -440,6 +441,15 @@ def _extract_place_phrase(text: str) -> str | None:
 
 
 def _build_news_targeted_query(place: str, question: str, item: Dict[str, Any] | None, last_reply: Optional[str]) -> str:
+    question_terms = re.findall(r"[A-Za-z0-9][A-Za-z0-9'.-]*", question or "")
+    filtered_terms = [
+        term
+        for term in question_terms
+        if term.lower() not in _FOLLOWUP_STOPWORDS and len(term) > 2
+    ]
+    if filtered_terms:
+        return f"{' '.join(filtered_terms[:10])} {place}".strip()
+
     if item and item.get("title"):
         return f"{item['title']} {place}"
 
@@ -529,8 +539,9 @@ def _contains_url(text: str) -> bool:
     return bool(re.search(r"https?://\S+", text or ""))
 
 
-def _append_followup_link_if_needed(final: str, evidence: Dict[str, Any]) -> str:
-    if not final or _contains_url(final) or not _answer_mentions_article_or_source(final):
+def _append_followup_link_if_needed(final: str, evidence: Dict[str, Any], original_text: str | None = None) -> str:
+    source_text = original_text or final
+    if not final or _contains_url(final) or not _answer_mentions_article_or_source(source_text):
         return final
     link = _extract_best_news_link(evidence)
     if not link:
@@ -581,14 +592,15 @@ async def _answer_journey_question(
         ],
     }
     final = await _run_journey_reasoner(place=place, question=question, evidence=evidence)
+    raw_final = final
     if not final:
         if route_or_transport:
-            final = "I can't tell you the best transport confidently from the data I gathered so far."
+            final = "I couldn't find a confirmed answer about the best transport from the data I gathered so far."
         else:
-            final = "I can't answer that confidently from the data I gathered so far."
+            final = "I couldn't find a confirmed answer from the data I gathered so far."
     final = _soften_followup_tone(final, place)
     final = _condense_direct_answer(final)
-    final = _append_followup_link_if_needed(final, evidence)
+    final = _append_followup_link_if_needed(final, evidence, raw_final)
     sources = [{"type": "weather"}, {"type": "news"}]
     return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": sources}
 
@@ -625,11 +637,12 @@ async def _answer_news_followup(place: str, question: str, last_reply: Optional[
         "targeted_item_answers_question": _news_item_answers_question(question, targeted_match),
     }
     final = await _run_followup_reasoner(place=place, question=question, evidence=evidence)
+    raw_final = final
     if not final:
-        final = f"The retrieved news for {place} does not specify the answer to that question."
+        final = f"I couldn't find a confirmed answer in the current news for {place}."
     final = _soften_followup_tone(final, place)
     final = _condense_direct_answer(final)
-    final = _append_followup_link_if_needed(final, evidence)
+    final = _append_followup_link_if_needed(final, evidence, raw_final)
     return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": [{"type": "news"}]}
 
 
@@ -678,7 +691,7 @@ async def _answer_weather_followup(place: str, question: str) -> Dict[str, Any]:
     }
     final = await _run_followup_reasoner(place=place, question=question, evidence=evidence)
     if not final:
-        final = f"The current weather data for {place} does not specify that detail."
+        final = f"I couldn't find a confirmed weather answer for {place} from the data I gathered so far."
     final = _soften_followup_tone(final, place)
     final = _condense_direct_answer(final)
     return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": sources}
@@ -792,6 +805,25 @@ async def run_agent(
     answer_mode = classify_answer_mode(effective_question, last_reply)
     origin = resumed_origin or extract_origin(effective_question, last_reply)
     route_or_transport = asks_route_or_transport(effective_question)
+
+    if needs_followup_reference_clarification(question, last_reply):
+        clarification = "I need the specific news item or the previous message to answer that follow-up directly."
+        await mark_tools_called(
+            session_id,
+            tool_names=[],
+            user_message=question,
+            agent_reply=clarification,
+        )
+        result: Dict[str, Any] = {
+            "place": place,
+            "final": clarification,
+            "risk_level": None,
+            "travel_advice": [],
+            "sources": [],
+        }
+        if debug:
+            result["debug"] = []
+        return result
 
     if answer_mode == "news_followup":
         result = await _answer_news_followup(place, question or "", last_reply)
