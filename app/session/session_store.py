@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 
 _PENDING_AGENT_CONTEXT_FIELD = "pending_agent_context"
 _RECENT_TURNS_FIELD = "recent_turns"
+_ACTIVE_DESTINATION_FIELD = "active_destination"
 _MAX_RECENT_TURNS = 6
 
 
@@ -138,6 +139,26 @@ async def set_pending_agent_context(
         log.warning("Redis write failed in set_pending_agent_context [session_id=%s]: %s", session_id, exc)
 
 
+async def set_active_destination(
+    session_id: str,
+    place: str | None,
+    *,
+    ttl_seconds: int = DEFAULT_SESSION_TTL,
+) -> None:
+    if redis is None:
+        return
+
+    sk = sess_key(session_id)
+    try:
+        if place:
+            await redis.hset(sk, mapping={_ACTIVE_DESTINATION_FIELD: place[:200]})
+            await redis.expire(sk, ttl_seconds)
+        else:
+            await redis.hdel(sk, _ACTIVE_DESTINATION_FIELD)
+    except RedisError as exc:
+        log.warning("Redis write failed in set_active_destination [session_id=%s]: %s", session_id, exc)
+
+
 async def get_pending_journey_question(session_id: str) -> str | None:
     if redis is None:
         return None
@@ -146,6 +167,17 @@ async def get_pending_journey_question(session_id: str) -> str | None:
         return value or None
     except RedisError as exc:
         log.warning("Redis read failed in get_pending_journey_question [session_id=%s]: %s", session_id, exc)
+        return None
+
+
+async def get_active_destination(session_id: str) -> str | None:
+    if redis is None:
+        return None
+    try:
+        value = await redis.hget(sess_key(session_id), _ACTIVE_DESTINATION_FIELD)
+        return str(value).strip() if value else None
+    except RedisError as exc:
+        log.warning("Redis read failed in get_active_destination [session_id=%s]: %s", session_id, exc)
         return None
 
 

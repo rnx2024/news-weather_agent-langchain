@@ -423,6 +423,57 @@ async def answer_news_followup(
     return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": [{"type": "news"}]}
 
 
+async def answer_general_followup(
+    llm: Any,
+    place: str,
+    question: str,
+    last_reply: Optional[str],
+    *,
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
+    place_evidence = _gather_place_evidence(place)
+    matched_item = _match_news_item(question, last_reply, list(place_evidence.get("news_items") or []))
+    current_evidence = {
+        "mode": "general_followup",
+        "question": question,
+        "conversation_history": conversation_history or [],
+        "place_evidence": place_evidence,
+        "matched_current_item": matched_item,
+        "used_targeted_search": False,
+        "targeted_search_query": None,
+        "targeted_search_error": None,
+        "targeted_news_items": [],
+        "matched_targeted_item": None,
+    }
+
+    plan = await _plan_followup_action(llm, place=place, question=question, evidence=current_evidence)
+    if plan["answered"] and plan["answer"]:
+        final = plan["answer"]
+        raw_final = final
+        evidence = current_evidence
+    else:
+        targeted_query = plan["search_query"] or _build_news_targeted_query(place, question, matched_item, last_reply)
+        targeted_items, targeted_err = search_news(targeted_query, place)
+        targeted_match = _match_news_item(question, last_reply, targeted_items)
+        evidence = {
+            **current_evidence,
+            "used_targeted_search": True,
+            "targeted_search_query": targeted_query,
+            "targeted_search_error": targeted_err or None,
+            "targeted_news_items": targeted_items[:3],
+            "matched_targeted_item": targeted_match,
+        }
+        final = await _run_followup_reasoner(llm, place=place, question=question, evidence=evidence)
+        raw_final = final
+        if not final:
+            final = f"I couldn't find a confirmed answer from the data I gathered so far for {place}."
+
+    final = _soften_followup_tone(final, place)
+    final = _condense_direct_answer(final)
+    final = _append_followup_link_if_needed(final, evidence, raw_final)
+    return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": [{"type": "weather"}, {"type": "news"}]}
+
+
 async def answer_weather_followup(
     llm: Any,
     place: str,
