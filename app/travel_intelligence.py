@@ -96,7 +96,11 @@ def filter_relevant_news_items(place: str, headlines: List[Dict[str, Any]]) -> L
         blob = f"{title} {snippet}".strip().lower()
         if place_lc in blob:
             relevant_items.append(item)
-    return relevant_items
+
+    # SerpAPI results were already queried for the selected place. If the snippet
+    # omits the exact place string, keep the original results rather than losing
+    # potentially relevant disruption details.
+    return relevant_items or headlines
 
 
 def score_news_risk(place: str, headlines: List[Dict[str, Any]]) -> tuple[int, List[str]]:
