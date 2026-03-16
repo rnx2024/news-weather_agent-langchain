@@ -11,8 +11,9 @@ from langgraph.prebuilt import create_react_agent
 
 from app.settings import settings
 from app.agent.agent_tools import weather_tool, news_tool, news_search_tool, city_risk_tool, travel_brief_tool
-from app.agent.agent_prompts import FOLLOWUP_QA_SYSTEM_PROMPT, LOCAL_INTELLIGENCE_SYSTEM_PROMPT
+from app.agent.agent_prompts import FOLLOWUP_QA_SYSTEM_PROMPT, JOURNEY_QA_SYSTEM_PROMPT, LOCAL_INTELLIGENCE_SYSTEM_PROMPT
 from app.news.news_service import get_news_items, search_news
+from app.travel_brief import build_travel_brief
 from app.weather.weather_service import get_weather_line, get_weather_summary
 from app.travel_intelligence import score_news_risk
 
@@ -264,6 +265,19 @@ def _news_text(item: Dict[str, Any] | None) -> str:
     ).strip()
 
 
+def _gather_place_evidence(place: str) -> Dict[str, Any]:
+    brief, err = build_travel_brief(place)
+    return {
+        "place": place,
+        "risk_level": brief.get("risk_level"),
+        "weather_summary": brief.get("weather_summary"),
+        "weather_reasons": brief.get("weather_reasons") or [],
+        "news_items": brief.get("news_items") or [],
+        "news_reasons": brief.get("news_reasons") or [],
+        "source_error": err or None,
+    }
+
+
 async def _run_followup_reasoner(
     *,
     place: str,
@@ -274,6 +288,25 @@ async def _run_followup_reasoner(
     response = await _llm.ainvoke(
         [
             {"role": "system", "content": FOLLOWUP_QA_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": f"Destination: {place}\nQuestion: {question}\nEvidence:\n{payload}",
+            },
+        ]
+    )
+    return str(getattr(response, "content", "") or "").strip()
+
+
+async def _run_journey_reasoner(
+    *,
+    place: str,
+    question: str,
+    evidence: Dict[str, Any],
+) -> str:
+    payload = json.dumps(evidence, ensure_ascii=True, indent=2)
+    response = await _llm.ainvoke(
+        [
+            {"role": "system", "content": JOURNEY_QA_SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": f"Destination: {place}\nQuestion: {question}\nEvidence:\n{payload}",
@@ -433,6 +466,24 @@ def _extract_best_news_link(evidence: Dict[str, Any]) -> str | None:
             link = str(item.get("link") or "").strip()
             if link:
                 return link
+    for key in ("targeted_news_items",):
+        items = evidence.get(key)
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict):
+                    link = str(item.get("link") or "").strip()
+                    if link:
+                        return link
+    for key in ("destination_evidence", "origin_evidence"):
+        block = evidence.get(key)
+        if isinstance(block, dict):
+            items = block.get("news_items")
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict):
+                        link = str(item.get("link") or "").strip()
+                        if link:
+                            return link
     return None
 
 
@@ -453,6 +504,59 @@ def _append_followup_link_if_needed(final: str, evidence: Dict[str, Any]) -> str
         return final
     separator = "" if final.endswith((".", "!", "?")) else "."
     return f"{final}{separator} Source: {link}"
+
+
+def _build_journey_targeted_query(origin: str, destination: str, question: str, route_or_transport: bool) -> str:
+    if route_or_transport:
+        return f"{origin} {destination} road closure traffic bus transport"
+
+    q = (question or "").lower()
+    if any(term in q for term in ("continue", "delay", "closure", "disruption", "strike", "cancel", "postpone")):
+        return f"{origin} {destination} travel disruption closure"
+
+    tokens = list(_tokenize_for_followup(question))
+    core = " ".join(tokens[:6]).strip()
+    return f"{core} {origin} {destination}".strip()
+
+
+async def _answer_journey_question(
+    place: str,
+    question: str,
+    origin: str,
+    *,
+    route_or_transport: bool,
+) -> Dict[str, Any]:
+    destination_evidence = _gather_place_evidence(place)
+    origin_evidence = _gather_place_evidence(origin)
+
+    targeted_query = _build_journey_targeted_query(origin, place, question, route_or_transport)
+    targeted_news_items, targeted_err = search_news(targeted_query, place)
+
+    evidence = {
+        "mode": "journey_planning",
+        "question": question,
+        "origin": origin,
+        "destination": place,
+        "route_or_transport": route_or_transport,
+        "destination_evidence": destination_evidence,
+        "origin_evidence": origin_evidence,
+        "targeted_search_query": targeted_query,
+        "targeted_search_error": targeted_err or None,
+        "targeted_news_items": targeted_news_items[:3],
+        "limitations": [
+            "No dedicated routing engine or live transport schedule data is available in this workflow."
+        ],
+    }
+    final = await _run_journey_reasoner(place=place, question=question, evidence=evidence)
+    if not final:
+        if route_or_transport:
+            final = "I can't tell you the best transport confidently from the data I gathered so far."
+        else:
+            final = "I can't answer that confidently from the data I gathered so far."
+    final = _soften_followup_tone(final, place)
+    final = _append_followup_link_if_needed(final, evidence)
+    sources = [{"type": "weather"}, {"type": "news"}]
+    return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": sources}
 
 
 async def _answer_news_followup(place: str, question: str, last_reply: Optional[str]) -> Dict[str, Any]:
@@ -646,9 +750,11 @@ async def run_agent(
     Run the LangGraph ReAct agent with tool gating per request.
     """
     last_user, last_reply = await get_last_exchange(session_id)
-    answer_mode = classify_answer_mode(question, last_reply)
-    origin = extract_origin(question)
-    route_or_transport = asks_route_or_transport(question)
+    resumed_origin = extract_origin(question, last_reply)
+    effective_question = last_user if resumed_origin and "where are you traveling from" in (last_reply or "").lower() and last_user else question
+    answer_mode = classify_answer_mode(effective_question, last_reply)
+    origin = resumed_origin or extract_origin(effective_question, last_reply)
+    route_or_transport = asks_route_or_transport(effective_question)
 
     if answer_mode == "news_followup":
         result = await _answer_news_followup(place, question or "", last_reply)
@@ -696,13 +802,30 @@ async def run_agent(
             result["debug"] = []
         return result
 
-    user_prompt = _build_user_prompt(place, question, origin)
+    if answer_mode == "journey_planning" and origin:
+        result = await _answer_journey_question(
+            place,
+            effective_question or question or "",
+            origin,
+            route_or_transport=route_or_transport,
+        )
+        await mark_tools_called(
+            session_id,
+            tool_names=[],
+            user_message=question,
+            agent_reply=result["final"],
+        )
+        if debug:
+            result["debug"] = []
+        return result
+
+    user_prompt = _build_user_prompt(place, effective_question, origin)
 
     # decide tool availability for this turn
-    include_weather, include_news = decide_tool_includes(question)
+    include_weather, include_news = decide_tool_includes(effective_question)
 
     # session-aware suppression (Redis)
-    force_weather, force_news = detect_force_signals(question or "")
+    force_weather, force_news = detect_force_signals(effective_question or "")
     allow_weather, allow_news = await should_include(session_id, force_weather, force_news)
 
     # Follow-up questions should still be allowed to inspect current evidence.

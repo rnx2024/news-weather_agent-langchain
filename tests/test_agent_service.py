@@ -96,6 +96,87 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("where are you traveling from", result["final"].lower())
         mark_mock.assert_awaited()
 
+    async def test_journey_origin_reply_resumes_previous_transport_question(self) -> None:
+        with patch(
+            "app.agent.agent_service.get_last_exchange",
+            new=AsyncMock(return_value=("What's the best transport to go there?", "Where are you traveling from?")),
+        ):
+            with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
+                with patch(
+                    "app.agent.agent_service._answer_journey_question",
+                    new=AsyncMock(return_value={"place": "La Union", "final": "Land travel looks practical right now.", "risk_level": None, "travel_advice": [], "sources": [{"type": "weather"}, {"type": "news"}]}),
+                ) as journey_mock:
+                    result = await run_agent(
+                        session_id="session-journey-origin",
+                        place="La Union",
+                        question="Ilocos Sur",
+                    )
+
+        self.assertEqual(result["final"], "Land travel looks practical right now.")
+        journey_mock.assert_awaited_once_with(
+            "La Union",
+            "What's the best transport to go there?",
+            "Ilocos Sur",
+            route_or_transport=True,
+        )
+
+    async def test_journey_transport_fallback_uses_gathered_data_wording(self) -> None:
+        brief = {
+            "place": "La Union",
+            "final": "La Union looks generally fine for travel today.",
+            "risk_level": "low",
+            "travel_advice": [],
+            "sources": [{"type": "weather"}, {"type": "news"}],
+            "weather_summary": {"current": {"weather_text": "Broken clouds"}, "day": {}},
+            "weather_reasons": [],
+            "news_reasons": [],
+            "news_items": [],
+        }
+        with patch("app.agent.agent_service.build_travel_brief", return_value=(brief, "")):
+            with patch("app.agent.agent_service.search_news", return_value=([], "")):
+                with patch("app.agent.agent_service._run_journey_reasoner", new=AsyncMock(return_value="")):
+                    result = await run_agent(
+                        session_id="session-journey-fallback",
+                        place="La Union",
+                        question="What's the best transport from Ilocos Sur to get there?",
+                    )
+
+        self.assertIsNone(result["risk_level"])
+        self.assertEqual(result["travel_advice"], [])
+        self.assertIn("data i gathered so far", result["final"].lower())
+
+    async def test_journey_answer_appends_source_link_when_reasoner_mentions_article(self) -> None:
+        brief = {
+            "place": "La Union",
+            "final": "La Union looks generally fine for travel today.",
+            "risk_level": "low",
+            "travel_advice": [],
+            "sources": [{"type": "weather"}, {"type": "news"}],
+            "weather_summary": {"current": {"weather_text": "Broken clouds"}, "day": {}},
+            "weather_reasons": [],
+            "news_reasons": [],
+            "news_items": [
+                {
+                    "title": "Roadworks expected near San Fernando",
+                    "snippet": "Minor roadworks may affect part of the corridor.",
+                    "link": "https://example.com/roadworks",
+                }
+            ],
+        }
+        with patch("app.agent.agent_service.build_travel_brief", return_value=(brief, "")):
+            with patch("app.agent.agent_service.search_news", return_value=([], "")):
+                with patch(
+                    "app.agent.agent_service._run_journey_reasoner",
+                    new=AsyncMock(return_value="You may want to check the article for the latest roadworks details."),
+                ):
+                    result = await run_agent(
+                        session_id="session-journey-link",
+                        place="La Union",
+                        question="What's the best transport from Ilocos Sur to get there?",
+                    )
+
+        self.assertIn("source: https://example.com/roadworks", result["final"].lower())
+
     async def test_news_followup_duration_uses_targeted_search_and_direct_answer(self) -> None:
         initial_items = [
             {
