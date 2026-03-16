@@ -5,6 +5,41 @@ from app.agent.agent_service import run_agent
 
 
 class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_same_destination_followup_uses_general_qa_even_without_recent_turns(self) -> None:
+        with patch(
+            "app.agent.agent_service.get_last_exchange",
+            new=AsyncMock(return_value=("Is it a good idea to travel there this weekend?", "Traveling to Boracay this weekend carries a medium risk level.")),
+        ):
+            with patch("app.agent.agent_service.get_recent_turns", new=AsyncMock(return_value=[])):
+                with patch("app.agent.agent_service.get_active_destination", new=AsyncMock(return_value="Boracay")):
+                    with patch("app.agent.agent_service.get_pending_agent_context", new=AsyncMock(return_value=None)):
+                        with patch("app.agent.agent_service.get_pending_journey_question", new=AsyncMock(return_value=None)):
+                            with patch("app.agent.agent_service._resolve_answer_mode", new=AsyncMock(return_value="travel_brief")):
+                                with patch(
+                                    "app.agent.agent_service._answer_general_followup",
+                                    new=AsyncMock(
+                                        return_value={
+                                            "place": "Boracay",
+                                            "final": "I don't see anything in the current reporting that spells out a specific route impact.",
+                                            "risk_level": None,
+                                            "travel_advice": [],
+                                            "sources": [{"type": "weather"}, {"type": "news"}],
+                                        }
+                                    ),
+                                ) as general_mock:
+                                    with patch("app.agent.agent_service._get_react_app") as react_mock:
+                                        with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
+                                            with patch("app.agent.agent_service.set_active_destination", new=AsyncMock(return_value=None)):
+                                                result = await run_agent(
+                                                    session_id="session-boracay-followup",
+                                                    place="Boracay",
+                                                    question="What does that mean for travelers?",
+                                                )
+
+        self.assertIn("current reporting", result["final"].lower())
+        general_mock.assert_awaited_once()
+        react_mock.assert_not_called()
+
     async def test_same_destination_session_followup_uses_general_qa_not_broad_agent(self) -> None:
         with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=("Is it a good idea to go there this weekend?", "Traveling to Subic this weekend carries a medium risk level."))):
             with patch(
@@ -106,6 +141,31 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Recent conversation context", prompt)
         self.assertIn("Any disruptions?", prompt)
         self.assertIn("No major disruptions reported.", prompt)
+
+    async def test_broad_agent_prompt_does_not_treat_chat_place_mentions_as_destination_switch(self) -> None:
+        messages = [unittest.mock.Mock()]
+        messages[0].content = "Travel looks fine."
+        app_mock = AsyncMock(return_value={"messages": messages})
+
+        with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, None))):
+            with patch("app.agent.agent_service.get_recent_turns", new=AsyncMock(return_value=[])):
+                with patch("app.agent.agent_service.get_active_destination", new=AsyncMock(return_value=None)):
+                    with patch("app.agent.agent_service.get_pending_agent_context", new=AsyncMock(return_value=None)):
+                        with patch("app.agent.agent_service.get_pending_journey_question", new=AsyncMock(return_value=None)):
+                            with patch("app.agent.agent_service.should_include", new=AsyncMock(return_value=(True, True))):
+                                with patch("app.agent.agent_service._resolve_answer_mode", new=AsyncMock(return_value="travel_brief")):
+                                    with patch("app.agent.agent_service._get_react_app", return_value=unittest.mock.Mock(ainvoke=app_mock)):
+                                        with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
+                                            with patch("app.agent.agent_service.set_active_destination", new=AsyncMock(return_value=None)):
+                                                await run_agent(
+                                                    session_id="session-broad-prompt",
+                                                    place="Boracay",
+                                                    question="I am from Ilocos Sur and want to know if Boracay is okay this weekend.",
+                                                )
+
+        prompt = app_mock.await_args.args[0]["messages"][0]["content"]
+        self.assertIn("selected location from the request is the only destination", prompt.lower())
+        self.assertNotIn("change the location", prompt.lower())
 
     async def test_news_followup_hides_brief_metadata(self) -> None:
         initial_items = [
