@@ -31,6 +31,20 @@ class AgentPolicyTests(unittest.TestCase):
         mode = classify_answer_mode("From Manila", "Where are you traveling from?")
         self.assertEqual(mode, "journey_planning")
 
+    def test_classify_news_duration_followup_from_last_reply(self) -> None:
+        mode = classify_answer_mode(
+            "I will go on Saturday. Will the vaccination last until Saturday?",
+            "Recent local reporting highlights La Union city launches free vaccination campaign to prevent rabies, which could increase crowding or change local access.",
+        )
+        self.assertEqual(mode, "news_followup")
+
+    def test_classify_weather_duration_followup_from_last_reply(self) -> None:
+        mode = classify_answer_mode(
+            "Will it still rain on Saturday?",
+            "Expect moderate rain with temperatures around 24-30°C and some rain-related delays possible.",
+        )
+        self.assertEqual(mode, "weather_followup")
+
 
 if __name__ == "__main__":
     unittest.main()
