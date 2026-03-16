@@ -380,6 +380,35 @@ def _news_item_answers_question(question: str, item: Dict[str, Any] | None) -> b
     return bool(_tokenize_for_followup(question) & _tokenize_for_followup(text))
 
 
+def _extract_best_news_link(evidence: Dict[str, Any]) -> str | None:
+    for key in ("matched_targeted_item", "matched_current_item"):
+        item = evidence.get(key)
+        if isinstance(item, dict):
+            link = str(item.get("link") or "").strip()
+            if link:
+                return link
+    return None
+
+
+def _answer_mentions_article_or_source(text: str) -> bool:
+    lower = (text or "").lower()
+    return any(term in lower for term in ("article", "source", "details", "read more", "here", "link"))
+
+
+def _contains_url(text: str) -> bool:
+    return bool(re.search(r"https?://\S+", text or ""))
+
+
+def _append_followup_link_if_needed(final: str, evidence: Dict[str, Any]) -> str:
+    if not final or _contains_url(final) or not _answer_mentions_article_or_source(final):
+        return final
+    link = _extract_best_news_link(evidence)
+    if not link:
+        return final
+    separator = "" if final.endswith((".", "!", "?")) else "."
+    return f"{final}{separator} Source: {link}"
+
+
 async def _answer_news_followup(place: str, question: str, last_reply: Optional[str]) -> Dict[str, Any]:
     items, err = get_news_items(place)
     if err:
@@ -414,6 +443,7 @@ async def _answer_news_followup(place: str, question: str, last_reply: Optional[
     final = await _run_followup_reasoner(place=place, question=question, evidence=evidence)
     if not final:
         final = f"The retrieved news for {place} does not specify the answer to that question."
+    final = _append_followup_link_if_needed(final, evidence)
     return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": [{"type": "news"}]}
 
 
