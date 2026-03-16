@@ -109,6 +109,36 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("through saturday afternoon", result["final"].lower())
         search_mock.assert_called_once()
 
+    async def test_news_followup_appends_source_link_when_answer_references_article(self) -> None:
+        initial_items = [
+            {
+                "title": "Hit-and-run chase reported in La Union",
+                "snippet": "Initial reporting mentions an incident in the area.",
+                "source": "Local News",
+                "date": "2026-03-16T05:00:00+00:00",
+                "link": "https://example.com/hit-and-run",
+            }
+        ]
+        with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, None))):
+            with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
+                with patch("app.agent.agent_service.get_news_items", return_value=(initial_items, "")):
+                    with patch(
+                        "app.agent.agent_service._run_followup_reasoner",
+                        new=AsyncMock(
+                            return_value=(
+                                "The retrieved reporting does not specify any possible disruptions. "
+                                "For more details, you can check the news article here."
+                            )
+                        ),
+                    ):
+                        result = await run_agent(
+                            session_id="session-4",
+                            place="La Union",
+                            question="I plan to go here by Saturday? Any possible disruptions?",
+                        )
+
+        self.assertIn("source: https://example.com/hit-and-run", result["final"].lower())
+
 
 if __name__ == "__main__":
     unittest.main()
