@@ -62,7 +62,9 @@ Rules:
 - Do not produce a travel brief.
 - Do not include risk levels, bullet advice, unrelated recap, or generic travel commentary.
 - Use only the supplied evidence. Do not invent facts.
-- If the evidence does not confirm the answer, say that the retrieved reporting or weather data does not specify it.
+- Keep the tone friendly, plain, and factual. Write like a helpful assistant, not a report generator.
+- Prefer natural phrasing such as "I don't see anything in the current reporting that confirms that" or "The current forecast doesn't spell that out" instead of stiff phrases like "the retrieved reporting does not specify."
+- If the evidence does not confirm the answer, say so briefly and directly without sounding robotic.
 - If targeted search evidence is present, prefer it when it is more specific than the initial snippets.
 - Keep the answer concise: 1-3 sentences, plain text.
 - If a source link is present in the most relevant evidence, you may include it once at the end.
