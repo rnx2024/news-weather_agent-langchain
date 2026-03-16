@@ -352,7 +352,11 @@ def needs_followup_reference_clarification(question: Optional[str], last_reply: 
         "matter",
         "has to do with",
     )
-    return any(term in q for term in relevance_terms)
+    if not any(term in q for term in relevance_terms):
+        return False
+
+    concrete_topic_tokens = _meaningful_tokens(question) - set(_CONTEXT_REFERENCE_TERMS)
+    return len(concrete_topic_tokens) < 2
 
 
 def is_journey_planning_question(q: Optional[str]) -> bool:
@@ -451,9 +455,13 @@ def _mentions_transport_choice(text: str) -> bool:
 
 
 def _token_overlap(a: str, b: str) -> set[str]:
-    a_tokens = {token for token in re.findall(r"[a-z]{4,}", a.lower()) if token not in _STOPWORDS}
-    b_tokens = {token for token in re.findall(r"[a-z]{4,}", b.lower()) if token not in _STOPWORDS}
+    a_tokens = _meaningful_tokens(a)
+    b_tokens = _meaningful_tokens(b)
     return a_tokens & b_tokens
+
+
+def _meaningful_tokens(text: str) -> set[str]:
+    return {token for token in re.findall(r"[a-z]{4,}", text.lower()) if token not in _STOPWORDS}
 
 
 def _looks_like_news_followup(question: str, last_reply: str) -> bool:
