@@ -9,12 +9,12 @@ from langchain_core.messages import BaseMessage, AIMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
 from app.settings import settings
-from app.agent.agent_tools import weather_tool, news_tool, city_risk_tool, travel_brief_tool
+from app.agent.agent_tools import weather_tool, news_tool, news_search_tool, city_risk_tool, travel_brief_tool
 from app.agent.agent_prompts import LOCAL_INTELLIGENCE_SYSTEM_PROMPT
 
 # session memory (Redis-backed)
 from app.session.session_cache import get_last_exchange, should_include, mark_tools_called
-from app.agent.agent_policy import decide_tool_includes, detect_force_signals
+from app.agent.agent_policy import AnswerMode, classify_answer_mode, decide_tool_includes, detect_force_signals
 
 
 # -----------------------------------------------------
@@ -44,6 +44,7 @@ def _get_react_app(include_weather: bool, include_news: bool):
         gated.append(weather_tool)
     if include_news:
         gated.append(news_tool)
+        gated.append(news_search_tool)
 
     app = create_react_agent(model=_llm, tools=gated, prompt=LOCAL_INTELLIGENCE_SYSTEM_PROMPT)
     _REACT_APP_CACHE[key] = app
@@ -174,6 +175,76 @@ def _extract_structured_brief(messages: List[BaseMessage], place: str) -> Dict[s
     }
 
 
+def _build_policy_lines(
+    *,
+    place: str,
+    answer_mode: AnswerMode,
+    include_weather: bool,
+    include_news: bool,
+    last_user: Optional[str],
+    last_reply: Optional[str],
+) -> List[str]:
+    policy_lines: List[str] = ["Policy:", f"- Selected location: {place}"]
+    if not include_weather:
+        policy_lines.append("- Do NOT call weather_tool or include weather unless explicitly asked.")
+    if not include_news:
+        policy_lines.append("- Do NOT call news_tool, news_search_tool, or include news unless explicitly asked.")
+
+    if last_user or last_reply:
+        policy_lines.append("- Prior exchange context (most recent only):")
+        if last_user:
+            policy_lines.append(f"  - User: {last_user}")
+        if last_reply:
+            policy_lines.append(f"  - Assistant: {last_reply}")
+
+    common_lines = [
+        "- Mention specific locations only if they are explicitly stated in the retrieved news or weather context.",
+        "- If evidence is missing or inconclusive, say it is not specified instead of guessing.",
+        f"- If the user's question mentions a different place than '{place}', begin with: \"You asked about <other place> but your selected location is {place}. To get updates for <other place>, change the Location.\" Then answer for {place} only.",
+    ]
+
+    if answer_mode == "news_followup":
+        policy_lines.extend(
+            [
+                "- Answer the user's specific news question directly in 1-3 sentences. Do NOT produce a generic travel brief.",
+                "- You MUST call travel_brief_tool exactly once first to inspect current news_items for the selected location.",
+                "- If the current news_items already answer the question, answer directly from those titles/snippets and do NOT call any extra search tool.",
+                "- If the current news_items do not answer the question, you MUST call news_search_tool exactly once using a short targeted query composed from the issue/topic and the selected location, such as 'PISTON strike Vigan'.",
+                "- If the targeted search still does not confirm the answer, say the retrieved news does not specify it.",
+                "- Do NOT include generic travel advice, risk level, or weather unless the user explicitly asked for them.",
+            ]
+        )
+    elif answer_mode == "weather_followup":
+        policy_lines.extend(
+            [
+                "- Answer the user's specific weather question directly in 1-3 sentences. Do NOT produce a generic travel brief.",
+                "- You MUST call travel_brief_tool exactly once first to inspect current weather_summary for the selected location.",
+                "- If weather_summary already answers the question, answer directly from it and do NOT call weather_tool.",
+                "- If weather_summary does not answer the question, you MAY call weather_tool once using the narrowest relevant horizon from the question.",
+                "- If the current forecast still does not specify the requested detail, say the current weather data does not specify it.",
+                "- Do NOT include generic travel advice, risk level, or unrelated news unless the user explicitly asked for them.",
+            ]
+        )
+    else:
+        policy_lines.extend(
+            [
+                "- Always produce a one-paragraph travel brief for the specified location.",
+                "- You MUST call travel_brief_tool exactly once before writing the final answer.",
+                "- Use the travel_brief_tool result as the primary source for risk level, travel advice, and supporting travel context.",
+                "- Ground the answer in the concrete travel_brief_tool evidence: weather_summary, weather_reasons, news_items, and news_reasons when available.",
+                "- Use the city_risk_tool only when the user explicitly asks about safety level, risk, or go/no-go judgment.",
+                "- Explicitly frame the answer around travel conditions, likely disruptions, and practical planning impact.",
+                "- Do NOT give generic advice. If weather data is available, mention the material weather signal driving the advice. If news_items are available, mention the most relevant reported issue from the title/snippet.",
+                "- If news_items is empty, say that the current news scan did not identify a major local traveler-facing disruption.",
+                "- If the user asks for news details, answer only from the retrieved titles/snippets/links. If that detail is absent, say it is not specified in the retrieved news.",
+                "- If the user asks about disruptions or 'where' they are, ground the answer using recent news: list up to 3 named places if present, otherwise say 'no specific locations reported'.",
+            ]
+        )
+
+    policy_lines.extend(common_lines)
+    return policy_lines
+
+
 # -----------------------------------------------------
 # Public function: run_agent
 # -----------------------------------------------------
@@ -187,7 +258,10 @@ async def run_agent(
     """
     Run the LangGraph ReAct agent with tool gating per request.
     """
+    last_user, last_reply = await get_last_exchange(session_id)
+
     user_prompt = _build_user_prompt(place, question)
+    answer_mode = classify_answer_mode(question, last_reply)
 
     # decide tool availability for this turn
     include_weather, include_news = decide_tool_includes(question)
@@ -196,41 +270,24 @@ async def run_agent(
     force_weather, force_news = detect_force_signals(question or "")
     allow_weather, allow_news = await should_include(session_id, force_weather, force_news)
 
-    if include_weather and not allow_weather:
+    # Follow-up questions should still be allowed to inspect current evidence.
+    if answer_mode == "news_followup":
+        include_news = True
+    elif answer_mode == "weather_followup":
+        include_weather = True
+
+    if include_weather and not allow_weather and answer_mode == "travel_brief":
         include_weather = False
-    if include_news and not allow_news:
+    if include_news and not allow_news and answer_mode == "travel_brief":
         include_news = False
 
-    # small policy hint
-    policy_lines: List[str] = ["Policy:", f"- Selected location: {place}"]
-    if not include_weather:
-        policy_lines.append("- Do NOT call weather_tool or include weather unless explicitly asked.")
-    if not include_news:
-        policy_lines.append("- Do NOT call news_tool or include news unless explicitly asked.")
-
-    # prior exchange context (1 turn)
-    last_user, last_reply = await get_last_exchange(session_id)
-    if last_user or last_reply:
-        policy_lines.append("- Prior exchange context (most recent only):")
-        if last_user:
-            policy_lines.append(f"  - User: {last_user}")
-        if last_reply:
-            policy_lines.append(f"  - Assistant: {last_reply}")
-
-    policy_lines.extend(
-        [
-            "- Always produce a one-paragraph travel brief for the specified location.",
-            "- You MUST call travel_brief_tool exactly once before writing the final answer.",
-            "- Use the travel_brief_tool result as the primary source for risk level, travel advice, and supporting travel context.",
-            "- Ground the answer in the concrete travel_brief_tool evidence: weather_summary, weather_reasons, news_items, and news_reasons when available.",
-            "- Use the city_risk_tool only when the user explicitly asks about safety level, risk, or go/no-go judgment.",
-            "- Explicitly frame the answer around travel conditions, likely disruptions, and practical planning impact.",
-            "- Do NOT give generic advice. If weather data is available, mention the material weather signal driving the advice. If news_items are available, mention the most relevant reported issue from the title/snippet.",
-            "- If news_items is empty, say that the current news scan did not identify a major local traveler-facing disruption.",
-            "- If the user asks for news details, answer only from the retrieved titles/snippets/links. If that detail is absent, say it is not specified in the retrieved news.",
-            "- If the user asks about disruptions or 'where' they are, ground the answer using recent news: list up to 3 named places if present, otherwise say 'no specific locations reported'.",
-            f"- If the user's question mentions a different place than '{place}', begin with: \"You asked about <other place> but your selected location is {place}. To get updates for <other place>, change the Location.\" Then provide the recommendation for {place} only.",
-        ]
+    policy_lines = _build_policy_lines(
+        place=place,
+        answer_mode=answer_mode,
+        include_weather=include_weather,
+        include_news=include_news,
+        last_user=last_user,
+        last_reply=last_reply,
     )
 
     user_prompt = "\n".join(policy_lines) + "\n\n---\n\n" + user_prompt
@@ -255,8 +312,10 @@ async def run_agent(
     result: Dict[str, Any] = {
         "place": str(brief.get("place") or place),
         "final": final_text or str(brief.get("final") or ""),
-        "risk_level": str(brief.get("risk_level") or "low"),
-        "travel_advice": cast(list[str], brief.get("travel_advice") or []),
+        "risk_level": (
+            str(brief.get("risk_level") or "low") if answer_mode == "travel_brief" else None
+        ),
+        "travel_advice": cast(list[str], brief.get("travel_advice") or []) if answer_mode == "travel_brief" else [],
         "sources": cast(list[dict[str, str]], brief.get("sources") or []),
     }
     if debug:

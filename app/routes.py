@@ -46,7 +46,7 @@ class NewsItemResponse(BaseModel):
 class AgentResponse(BaseModel):
     place: str
     final: str
-    risk_level: RiskLevel
+    risk_level: RiskLevel | None = None
     travel_advice: list[str]
     sources: list[TravelBriefSourceResponse]
 

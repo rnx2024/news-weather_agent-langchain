@@ -13,19 +13,13 @@ from app.settings import settings
 log = logging.getLogger(__name__)
 
 
-def fetch_news_items(place: str) -> Tuple[List[Dict[str, Any]], str]:
-    """
-    Fetch SerpAPI Google News results:
-    - dynamically compute GL (country code)
-    - filter only last 7 days
-    - return max 3 headlines
-    """
-    gl_code = resolve_country_code(place)
+def _fetch_google_news(query: str, *, gl_hint: str) -> Tuple[List[Dict[str, Any]], str]:
+    gl_code = resolve_country_code(gl_hint)
     gl_code = gl_code.lower() if gl_code else "us"
 
     params = {
         "engine": "google_news",
-        "q": place,
+        "q": query,
         "hl": "en",
         "gl": gl_code,
         "api_key": settings.serp_api_key,
@@ -64,3 +58,19 @@ def fetch_news_items(place: str) -> Tuple[List[Dict[str, Any]], str]:
 
     filtered.sort(key=lambda x: x["date"], reverse=True)
     return filtered[:3], ""
+
+
+def fetch_news_items(place: str) -> Tuple[List[Dict[str, Any]], str]:
+    """
+    Fetch recent Google News results for a selected place.
+    """
+    return _fetch_google_news(place, gl_hint=place)
+
+
+def search_news_items(query: str, place_hint: str | None = None) -> Tuple[List[Dict[str, Any]], str]:
+    """
+    Run a targeted Google News search for follow-up questions, keeping the same
+    date filtering and response shape as the default place-based search.
+    """
+    hint = place_hint or query
+    return _fetch_google_news(query, gl_hint=hint)
