@@ -1,7 +1,74 @@
 # app/agent_policy.py
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
+
+
+AnswerMode = Literal["travel_brief", "news_followup", "weather_followup"]
+
+
+_WEATHER_TERMS = (
+    "weather",
+    "forecast",
+    "temperature",
+    "rain",
+    "storm",
+    "wind",
+    "uv",
+    "heat",
+    "snow",
+    "fog",
+    "typhoon",
+    "hurricane",
+    "humid",
+    "humidity",
+    "clear",
+    "cloud",
+)
+
+_NEWS_TERMS = (
+    "news",
+    "headline",
+    "headlines",
+    "update",
+    "updates",
+    "disruption",
+    "disruptions",
+    "incident",
+    "incidents",
+    "protest",
+    "strike",
+    "closure",
+    "closures",
+    "closed",
+    "outage",
+    "traffic",
+    "where",
+    "location",
+    "locations",
+    "area",
+    "areas",
+    "reported",
+    "reporting",
+    "article",
+)
+
+_TRAVEL_BRIEF_TERMS = (
+    "travel brief",
+    "travel advice",
+    "practical advice",
+    "should i go",
+    "should we go",
+    "fine for travel",
+    "safe",
+    "risk",
+    "go/no-go",
+    "worth it",
+)
+
+
+def _has_any_term(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term in text for term in terms)
 
 
 def is_trip_planning_question(q: Optional[str]) -> bool:
@@ -67,49 +134,8 @@ def decide_tool_includes(question: Optional[str]) -> Tuple[bool, bool]:
 
     q = question.lower()
 
-    inc_w = any(
-        t in q
-        for t in (
-            "weather",
-            "forecast",
-            "temperature",
-            "rain",
-            "storm",
-            "wind",
-            "uv",
-            "heat",
-            "snow",
-            "fog",
-            "typhoon",
-            "hurricane",
-        )
-    )
-
-    inc_n = any(
-        t in q
-        for t in (
-            "news",
-            "headline",
-            "headlines",
-            "update",
-            "updates",
-            "disruption",
-            "disruptions",
-            "incident",
-            "incidents",
-            "protest",
-            "strike",
-            "closure",
-            "closures",
-            "outage",
-            "traffic",
-            "where",
-            "location",
-            "locations",
-            "area",
-            "areas",
-        )
-    )
+    inc_w = _has_any_term(q, _WEATHER_TERMS)
+    inc_n = _has_any_term(q, _NEWS_TERMS)
 
     return (inc_w, inc_n) if (inc_w or inc_n) else (False, False)
 
@@ -126,3 +152,30 @@ def detect_force_signals(question: str) -> Tuple[bool, bool]:
         return True, True
 
     return ("weather" in q_lc, "news" in q_lc)
+
+
+def classify_answer_mode(question: Optional[str], last_reply: Optional[str] = None) -> AnswerMode:
+    if not question:
+        return "travel_brief"
+
+    q = question.lower()
+    last = (last_reply or "").lower()
+
+    if is_trip_planning_question(question) or _has_any_term(q, _TRAVEL_BRIEF_TERMS):
+        return "travel_brief"
+
+    has_weather = _has_any_term(q, _WEATHER_TERMS)
+    has_news = _has_any_term(q, _NEWS_TERMS)
+
+    # Support short follow-ups like "is that in Vigan?" by inheriting the prior topic.
+    if not has_weather and not has_news and any(token in q for token in ("that", "this", "it", "there")):
+        if _has_any_term(last, _NEWS_TERMS):
+            has_news = True
+        elif _has_any_term(last, _WEATHER_TERMS):
+            has_weather = True
+
+    if has_news and not has_weather:
+        return "news_followup"
+    if has_weather and not has_news:
+        return "weather_followup"
+    return "travel_brief"

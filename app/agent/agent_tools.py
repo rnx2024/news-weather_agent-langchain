@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from langchain_core.tools import tool
 
 from app.weather.weather_service import get_weather_line, get_weather_summary
-from app.news.news_service import get_news_items
+from app.news.news_service import get_news_items, search_news
 from app.travel_brief import build_travel_brief
 from app.travel_intelligence import classify_risk_level, score_news_risk, score_weather_risk
 
@@ -44,6 +44,11 @@ class WeatherInput(BaseModel):
 
 class NewsInput(BaseModel):
     place: str
+
+
+class NewsSearchInput(BaseModel):
+    query: str
+    place_hint: Optional[str] = None
 
 
 class RiskInput(BaseModel):
@@ -145,6 +150,44 @@ def news_tool(place: str) -> str:
             raise RuntimeError(err)
         if not headlines:
             return "No recent news."
+
+        return "\n".join(
+            f"- {h['title']} ({h['source']}, {h['date']})"
+            + (f" — {h['snippet'][:160].strip()}" if h.get("snippet") else "")
+            + (f" -> {h['link']}" if h.get("link") else "")
+            for h in headlines
+        )
+
+    out = retry(call)
+    if isinstance(out, str) and not is_error_result(out):
+        cache_set_str(cache_key, out, ttl=CACHE_TTL_SECONDS)
+    return out
+
+
+@tool(args_schema=NewsSearchInput)
+def news_search_tool(query: str, place_hint: Optional[str] = None) -> str:
+    """
+    Run a targeted follow-up news search for a named issue and destination,
+    such as 'PISTON strike Vigan', when the current snippets are insufficient.
+    """
+    q = (query or "").strip()
+    hint = (place_hint or "").strip()
+    if not q:
+        raise RuntimeError("A search query is required.")
+
+    cache_key = f"cache:tool:news_search:{normalize_text(q)}:{normalize_text(hint or 'global')}"
+    cached = cache_get_str(cache_key)
+    if cached is not None:
+        return cached
+
+    news_rate.acquire()
+
+    def call():
+        headlines, err = search_news(q, hint or None)
+        if err:
+            raise RuntimeError(err)
+        if not headlines:
+            return "No targeted news results."
 
         return "\n".join(
             f"- {h['title']} ({h['source']}, {h['date']})"

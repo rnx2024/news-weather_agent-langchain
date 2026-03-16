@@ -96,7 +96,7 @@ async def mark_tools_called(
     await mark_sent(
         session_id,
         weather_sent=("weather_tool" in tset),
-        news_sent=("news_tool" in tset),
+        news_sent=("news_tool" in tset or "news_search_tool" in tset),
         user_message=user_message,
         agent_reply=agent_reply,
         ttl_seconds=ttl_seconds,
