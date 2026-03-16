@@ -283,6 +283,52 @@ async def _run_followup_reasoner(
     return str(getattr(response, "content", "") or "").strip()
 
 
+def _soften_followup_tone(final: str, place: str) -> str:
+    text = (final or "").strip()
+    if not text:
+        return text
+
+    replacements = (
+        (
+            re.compile(rf"^The retrieved news for {re.escape(place)} does not specify the answer to that question\.?$", re.IGNORECASE),
+            f"I don't see anything in the current news for {place} that answers that directly.",
+        ),
+        (
+            re.compile(rf"^The current weather data for {re.escape(place)} does not specify that detail\.?$", re.IGNORECASE),
+            f"The current forecast for {place} doesn't spell that out.",
+        ),
+        (
+            re.compile(r"^The retrieved reporting does not specify any possible disruptions\.?\s*", re.IGNORECASE),
+            "I don't see any confirmed disruptions in the current reporting. ",
+        ),
+        (
+            re.compile(r"^The retrieved reporting does not confirm that ", re.IGNORECASE),
+            "I don't see anything in the current reporting that confirms ",
+        ),
+        (
+            re.compile(r"^The retrieved reporting does not specify ", re.IGNORECASE),
+            "I don't see anything in the current reporting that specifies ",
+        ),
+        (
+            re.compile(r"^The retrieved weather data for ", re.IGNORECASE),
+            "The current weather for ",
+        ),
+        (
+            re.compile(r" does not specify any possible risks or weather disturbances\.?$", re.IGNORECASE),
+            " doesn't point to any specific weather disruptions right now.",
+        ),
+        (
+            re.compile(r" does not specify that detail\.?$", re.IGNORECASE),
+            " doesn't spell that out.",
+        ),
+    )
+
+    for pattern, replacement in replacements:
+        text = pattern.sub(replacement, text)
+
+    return re.sub(r"\s{2,}", " ", text).strip()
+
+
 def _is_duration_question(question: str) -> bool:
     q = (question or "").lower()
     return any(term in q for term in ("until", "last", "still", "continue", "ongoing", "on saturday", "on sunday"))
@@ -443,6 +489,7 @@ async def _answer_news_followup(place: str, question: str, last_reply: Optional[
     final = await _run_followup_reasoner(place=place, question=question, evidence=evidence)
     if not final:
         final = f"The retrieved news for {place} does not specify the answer to that question."
+    final = _soften_followup_tone(final, place)
     final = _append_followup_link_if_needed(final, evidence)
     return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": [{"type": "news"}]}
 
@@ -475,6 +522,7 @@ async def _answer_weather_followup(place: str, question: str) -> Dict[str, Any]:
             final = await _run_followup_reasoner(place=place, question=question, evidence=evidence)
             if not final:
                 final = f"The current weather snapshot for {place} is {line}."
+            final = _soften_followup_tone(final, place)
             return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": sources}
         final = f"I could not retrieve current weather data for {place} right now."
         if err or line_err:
@@ -491,6 +539,7 @@ async def _answer_weather_followup(place: str, question: str) -> Dict[str, Any]:
     final = await _run_followup_reasoner(place=place, question=question, evidence=evidence)
     if not final:
         final = f"The current weather data for {place} does not specify that detail."
+    final = _soften_followup_tone(final, place)
     return {"place": place, "final": final, "risk_level": None, "travel_advice": [], "sources": sources}
 
 

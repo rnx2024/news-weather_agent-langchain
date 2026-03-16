@@ -44,10 +44,42 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["risk_level"])
         self.assertEqual(result["travel_advice"], [])
         self.assertEqual(result["sources"], [{"type": "news"}])
-        self.assertIn("does not confirm", result["final"].lower())
+        self.assertIn("confirms the piston strike is in vigan", result["final"].lower())
+        self.assertNotIn("the retrieved reporting does not confirm", result["final"].lower())
         search_mock.assert_not_called()
         reasoner_mock.assert_awaited()
         react_mock.assert_not_called()
+
+    async def test_news_followup_softens_robotic_language(self) -> None:
+        initial_items = [
+            {
+                "title": "Hit-and-run chase reported in La Union",
+                "snippet": "Initial reporting mentions an incident in the area.",
+                "source": "Local News",
+                "date": "2026-03-16T05:00:00+00:00",
+                "link": "https://example.com/hit-and-run",
+            }
+        ]
+        with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, None))):
+            with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
+                with patch("app.agent.agent_service.get_news_items", return_value=(initial_items, "")):
+                    with patch(
+                        "app.agent.agent_service._run_followup_reasoner",
+                        new=AsyncMock(
+                            return_value=(
+                                "The retrieved reporting does not specify any possible disruptions. "
+                                "For more details, you can check the news article here."
+                            )
+                        ),
+                    ):
+                        result = await run_agent(
+                            session_id="session-tone-news",
+                            place="La Union",
+                            question="I plan to go here by Saturday? Any possible disruptions?",
+                        )
+
+        self.assertIn("i don't see any confirmed disruptions", result["final"].lower())
+        self.assertNotIn("the retrieved reporting does not specify", result["final"].lower())
 
     async def test_journey_question_without_origin_asks_for_clarification(self) -> None:
         with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, None))):
@@ -138,6 +170,29 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
                         )
 
         self.assertIn("source: https://example.com/hit-and-run", result["final"].lower())
+
+    async def test_weather_followup_softens_robotic_language(self) -> None:
+        with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, None))):
+            with patch("app.agent.agent_service.mark_tools_called", new=AsyncMock(return_value=None)):
+                with patch("app.agent.agent_service.get_weather_summary", return_value=("Broken clouds with a temperature of 25.78C.", "")):
+                    with patch(
+                        "app.agent.agent_service._run_followup_reasoner",
+                        new=AsyncMock(
+                            return_value=(
+                                "The retrieved weather data for La Union shows broken clouds with a temperature of 25.78C, "
+                                "but it does not specify any possible risks or weather disturbances."
+                            )
+                        ),
+                    ):
+                        result = await run_agent(
+                            session_id="session-tone-weather",
+                            place="La Union",
+                            question="So no possible risks? or weather disturbances?",
+                        )
+
+        self.assertIn("the current weather for la union", result["final"].lower())
+        self.assertIn("doesn't point to any specific weather disruptions right now", result["final"].lower())
+        self.assertNotIn("the retrieved weather data", result["final"].lower())
 
 
 if __name__ == "__main__":
