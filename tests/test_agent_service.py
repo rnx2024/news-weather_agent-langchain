@@ -6,6 +6,28 @@ from app.agent.agent_service import run_agent
 
 
 class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
+    class _DummyRedis:
+        async def hget(self, *args, **kwargs):
+            return None
+
+        async def hgetall(self, *args, **kwargs):
+            return {}
+
+        async def hset(self, *args, **kwargs):
+            return None
+
+        async def hdel(self, *args, **kwargs):
+            return None
+
+        async def expire(self, *args, **kwargs):
+            return None
+
+    async def asyncSetUp(self) -> None:
+        self._redis_patcher = patch("app.session.session_store.redis", new=self._DummyRedis())
+        self._redis_patcher.start()
+
+    async def asyncTearDown(self) -> None:
+        self._redis_patcher.stop()
     @staticmethod
     def _brief(
         place: str,
