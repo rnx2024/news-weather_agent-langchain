@@ -32,9 +32,9 @@ def _raise_session_unavailable() -> None:
     raise HTTPException(status_code=503, detail=SESSION_UNAVAILABLE_MESSAGE)
 
 
-def _ensure_session_store_available() -> None:
+async def _ensure_session_store_available() -> None:
     try:
-        ensure_session_store_ready()
+        await ensure_session_store_ready()
     except SessionStoreUnavailable:
         _raise_session_unavailable()
 
@@ -101,7 +101,7 @@ async def health(request: Request) -> dict[str, str]:
 )
 @limiter.limit("30/minute")
 async def create_session(request: Request) -> dict[str, str]:
-    _ensure_session_store_available()
+    await _ensure_session_store_available()
     from uuid import uuid4
 
     session_id = str(uuid4())
@@ -121,7 +121,7 @@ async def agent_endpoint(
     payload: AgentRequest,
     session_id: Annotated[str, Depends(require_session)],
 ) -> AgentResponse:
-    _ensure_session_store_available()
+    await _ensure_session_store_available()
     question = payload.question or ""
 
     try:

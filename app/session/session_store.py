@@ -7,7 +7,7 @@ import inspect
 import json
 from typing import Any, Awaitable, Callable, Dict, Iterable, Tuple
 
-from app.redis_client import redis
+from app.redis_client import redis, init_redis
 from app.session.session_keys import DEFAULT_SESSION_TTL, ONE_HOUR, news_key, sess_key, to_int, weather_key
 from app.session.errors import SessionStoreUnavailable, SESSION_UNAVAILABLE_MESSAGE
 from redis.exceptions import RedisError
@@ -295,7 +295,14 @@ async def get_last_sent_timestamps(session_id: str) -> tuple[int, int, int]:
     return to_int(w, 0), to_int(n, 0), to_int(c, 0)
 
 
-def ensure_session_store_ready() -> None:
+async def ensure_session_store_ready() -> None:
+    if redis is not None:
+        return
+    try:
+        await init_redis()
+    except Exception as exc:
+        log.warning("Session store init failed: %s", exc)
+        raise SessionStoreUnavailable(SESSION_UNAVAILABLE_MESSAGE) from exc
     _require_redis()
 
 
