@@ -19,6 +19,31 @@ _ACTIVE_DESTINATION_FIELD = "active_destination"
 _ACTIVE_ORIGIN_FIELD = "active_origin"
 _MAX_RECENT_TURNS = 6
 
+_MEMORY_SESSIONS: dict[str, dict[str, str]] = {}
+_MEMORY_EXPIRY: dict[str, float] = {}
+
+
+def _mem_expire(session_id: str, ttl_seconds: int) -> None:
+    _MEMORY_EXPIRY[session_id] = time.time() + ttl_seconds
+
+
+def _mem_prune(session_id: str) -> None:
+    expiry = _MEMORY_EXPIRY.get(session_id)
+    if expiry is None:
+        return
+    if time.time() >= expiry:
+        _MEMORY_SESSIONS.pop(session_id, None)
+        _MEMORY_EXPIRY.pop(session_id, None)
+
+
+def _mem_get_bucket(session_id: str, *, create: bool = False) -> dict[str, str]:
+    _mem_prune(session_id)
+    bucket = _MEMORY_SESSIONS.get(session_id)
+    if bucket is None and create:
+        bucket = {}
+        _MEMORY_SESSIONS[session_id] = bucket
+    return bucket or {}
+
 
 async def _resolve_compute_value(compute_fn: Callable[[], Awaitable[str] | str]) -> str:
     value = compute_fn()
@@ -27,7 +52,7 @@ async def _resolve_compute_value(compute_fn: Callable[[], Awaitable[str] | str])
 
 async def get_session_state(session_id: str) -> Dict[str, Any]:
     if redis is None:
-        return {}
+        return dict(_mem_get_bucket(session_id))
     try:
         data = await redis.hgetall(sess_key(session_id))
         return data or {}
@@ -38,7 +63,13 @@ async def get_session_state(session_id: str) -> Dict[str, Any]:
 
 async def should_include(session_id: str, force_weather: bool, force_news: bool) -> Tuple[bool, bool]:
     if redis is None:
-        return True, True
+        data = _mem_get_bucket(session_id)
+        now = int(time.time())
+        last_w = to_int((data or {}).get("last_weather_sent_at"), 0)
+        last_n = to_int((data or {}).get("last_news_sent_at"), 0)
+        include_weather = force_weather or (now - last_w >= ONE_HOUR)
+        include_news = force_news or (now - last_n >= ONE_HOUR)
+        return include_weather, include_news
 
     now = int(time.time())
     try:
@@ -65,6 +96,33 @@ async def mark_sent(
     ttl_seconds: int = DEFAULT_SESSION_TTL,
 ) -> None:
     if redis is None:
+        bucket = _mem_get_bucket(session_id, create=True)
+        now = int(time.time())
+        mapping: dict[str, str] = {}
+
+        if weather_sent:
+            mapping["last_weather_sent_at"] = str(now)
+        if news_sent:
+            mapping["last_news_sent_at"] = str(now)
+        mapping["last_chat_sent_at"] = str(now)
+
+        if user_message:
+            mapping["last_user_message"] = user_message[:500]
+        if agent_reply:
+            mapping["last_agent_reply"] = agent_reply[:1000]
+
+        if user_message or agent_reply:
+            recent_turns = await get_recent_turns(session_id)
+            recent_turns.append(
+                {
+                    "user": (user_message or "")[:500],
+                    "assistant": (agent_reply or "")[:1000],
+                }
+            )
+            mapping[_RECENT_TURNS_FIELD] = json.dumps(recent_turns[-_MAX_RECENT_TURNS:], ensure_ascii=True)
+
+        bucket.update(mapping)
+        _mem_expire(session_id, ttl_seconds)
         return
 
     now = int(time.time())
@@ -107,6 +165,12 @@ async def set_pending_journey_question(
     ttl_seconds: int = DEFAULT_SESSION_TTL,
 ) -> None:
     if redis is None:
+        bucket = _mem_get_bucket(session_id, create=True)
+        if question:
+            bucket["pending_journey_question"] = question[:500]
+            _mem_expire(session_id, ttl_seconds)
+        else:
+            bucket.pop("pending_journey_question", None)
         return
 
     sk = sess_key(session_id)
@@ -127,6 +191,12 @@ async def set_pending_agent_context(
     ttl_seconds: int = DEFAULT_SESSION_TTL,
 ) -> None:
     if redis is None:
+        bucket = _mem_get_bucket(session_id, create=True)
+        if context:
+            bucket[_PENDING_AGENT_CONTEXT_FIELD] = json.dumps(context, ensure_ascii=True)
+            _mem_expire(session_id, ttl_seconds)
+        else:
+            bucket.pop(_PENDING_AGENT_CONTEXT_FIELD, None)
         return
 
     sk = sess_key(session_id)
@@ -147,6 +217,12 @@ async def set_active_destination(
     ttl_seconds: int = DEFAULT_SESSION_TTL,
 ) -> None:
     if redis is None:
+        bucket = _mem_get_bucket(session_id, create=True)
+        if place:
+            bucket[_ACTIVE_DESTINATION_FIELD] = place[:200]
+            _mem_expire(session_id, ttl_seconds)
+        else:
+            bucket.pop(_ACTIVE_DESTINATION_FIELD, None)
         return
 
     sk = sess_key(session_id)
@@ -167,6 +243,12 @@ async def set_active_origin(
     ttl_seconds: int = DEFAULT_SESSION_TTL,
 ) -> None:
     if redis is None:
+        bucket = _mem_get_bucket(session_id, create=True)
+        if origin:
+            bucket[_ACTIVE_ORIGIN_FIELD] = origin[:200]
+            _mem_expire(session_id, ttl_seconds)
+        else:
+            bucket.pop(_ACTIVE_ORIGIN_FIELD, None)
         return
 
     sk = sess_key(session_id)
@@ -182,7 +264,8 @@ async def set_active_origin(
 
 async def get_pending_journey_question(session_id: str) -> str | None:
     if redis is None:
-        return None
+        value = _mem_get_bucket(session_id).get("pending_journey_question")
+        return value or None
     try:
         value = await redis.hget(sess_key(session_id), "pending_journey_question")
         return value or None
@@ -193,7 +276,8 @@ async def get_pending_journey_question(session_id: str) -> str | None:
 
 async def get_active_destination(session_id: str) -> str | None:
     if redis is None:
-        return None
+        value = _mem_get_bucket(session_id).get(_ACTIVE_DESTINATION_FIELD)
+        return str(value).strip() if value else None
     try:
         value = await redis.hget(sess_key(session_id), _ACTIVE_DESTINATION_FIELD)
         return str(value).strip() if value else None
@@ -204,7 +288,8 @@ async def get_active_destination(session_id: str) -> str | None:
 
 async def get_active_origin(session_id: str) -> str | None:
     if redis is None:
-        return None
+        value = _mem_get_bucket(session_id).get(_ACTIVE_ORIGIN_FIELD)
+        return str(value).strip() if value else None
     try:
         value = await redis.hget(sess_key(session_id), _ACTIVE_ORIGIN_FIELD)
         return str(value).strip() if value else None
@@ -215,7 +300,13 @@ async def get_active_origin(session_id: str) -> str | None:
 
 async def get_pending_agent_context(session_id: str) -> Dict[str, str] | None:
     if redis is None:
-        return None
+        raw = _mem_get_bucket(session_id).get(_PENDING_AGENT_CONTEXT_FIELD)
+        if not raw:
+            return None
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        return {str(key): str(value) for key, value in data.items() if value is not None}
     try:
         raw = await redis.hget(sess_key(session_id), _PENDING_AGENT_CONTEXT_FIELD)
         if not raw:
@@ -231,7 +322,23 @@ async def get_pending_agent_context(session_id: str) -> Dict[str, str] | None:
 
 async def get_recent_turns(session_id: str) -> list[Dict[str, str]]:
     if redis is None:
-        return []
+        raw = _mem_get_bucket(session_id).get(_RECENT_TURNS_FIELD)
+        if not raw:
+            return []
+        data = json.loads(raw)
+        if not isinstance(data, list):
+            return []
+        turns: list[Dict[str, str]] = []
+        for item in data[-_MAX_RECENT_TURNS:]:
+            if not isinstance(item, dict):
+                continue
+            turns.append(
+                {
+                    "user": str(item.get("user") or ""),
+                    "assistant": str(item.get("assistant") or ""),
+                }
+            )
+        return turns
     try:
         raw = await redis.hget(sess_key(session_id), _RECENT_TURNS_FIELD)
         if not raw:
@@ -276,7 +383,8 @@ async def mark_tools_called(
 
 async def get_last_exchange(session_id: str) -> tuple[str | None, str | None]:
     if redis is None:
-        return None, None
+        bucket = _mem_get_bucket(session_id)
+        return bucket.get("last_user_message"), bucket.get("last_agent_reply")
     try:
         last_user, last_reply = await redis.hmget(
             sess_key(session_id),
@@ -291,7 +399,11 @@ async def get_last_exchange(session_id: str) -> tuple[str | None, str | None]:
 
 async def get_last_sent_timestamps(session_id: str) -> tuple[int, int, int]:
     if redis is None:
-        return 0, 0, 0
+        bucket = _mem_get_bucket(session_id)
+        w = bucket.get("last_weather_sent_at")
+        n = bucket.get("last_news_sent_at")
+        c = bucket.get("last_chat_sent_at")
+        return to_int(w, 0), to_int(n, 0), to_int(c, 0)
     try:
         w, n, c = await redis.hmget(
             sess_key(session_id),
