@@ -11,7 +11,7 @@ from app.weather.weather_service import get_weather_line
 from app.news.news_service import get_news_items
 from app.settings import settings
 from app.session.session_auth import require_session, sign_session
-from app.session.errors import SessionStoreUnavailable
+from app.session.errors import SessionStoreUnavailable, SESSION_UNAVAILABLE_MESSAGE
 from app.session.session_store import ensure_session_store_ready
 from app.tooling.ratelimit import limiter
 
@@ -29,7 +29,7 @@ def require_api_key(
 
 
 def _raise_session_unavailable() -> None:
-    raise HTTPException(status_code=503, detail="Session can't be loaded or Session can't be retrieved.")
+    raise HTTPException(status_code=503, detail=SESSION_UNAVAILABLE_MESSAGE)
 
 
 def _ensure_session_store_available() -> None:
@@ -93,7 +93,12 @@ async def health(request: Request) -> dict[str, str]:
     return {"status": "ok"}
 
 
-@router.post("/session", tags=["session"], dependencies=[Depends(require_api_key)])
+@router.post(
+    "/session",
+    tags=["session"],
+    dependencies=[Depends(require_api_key)],
+    responses={503: {"description": SESSION_UNAVAILABLE_MESSAGE}},
+)
 @limiter.limit("30/minute")
 async def create_session(request: Request) -> dict[str, str]:
     _ensure_session_store_available()
@@ -104,7 +109,12 @@ async def create_session(request: Request) -> dict[str, str]:
     return {"session_id": session_id, "session_token": session_token}
 
 
-@router.post("/chat", tags=["agent"], dependencies=[Depends(require_api_key)])
+@router.post(
+    "/chat",
+    tags=["agent"],
+    dependencies=[Depends(require_api_key)],
+    responses={503: {"description": SESSION_UNAVAILABLE_MESSAGE}},
+)
 @limiter.limit("15/minute")
 async def agent_endpoint(
     request: Request,
