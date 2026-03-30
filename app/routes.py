@@ -93,6 +93,17 @@ async def health(request: Request) -> dict[str, str]:
     return {"status": "ok"}
 
 
+@router.get(
+    "/health/session",
+    tags=["session"],
+    responses={503: {"description": SESSION_UNAVAILABLE_MESSAGE}},
+)
+@limiter.limit("30/minute")
+async def session_health(request: Request) -> dict[str, str]:
+    await _ensure_session_store_available()
+    return {"status": "ok"}
+
+
 @router.post(
     "/session",
     tags=["session"],
