@@ -15,6 +15,8 @@ from app.travel_brief import build_travel_brief
 from app.weather.weather_service import get_weather_line, get_weather_summary, get_weather_summary_by_coords
 from app.routing.ors_service import plan_route
 
+_LONG_DISTANCE_KM = 500.0
+
 
 def _extract_text_tokens(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9]{4,}", (text or "").lower()))
@@ -327,6 +329,114 @@ def _detect_weather_horizon(question: str) -> str:
     return "today"
 
 
+def _join_news_text(items: List[Dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        snippet = str(item.get("snippet") or "").strip()
+        if title:
+            parts.append(title)
+        if snippet:
+            parts.append(snippet)
+    return " ".join(parts).strip()
+
+
+def _collect_disruption_flags(*blocks: Dict[str, Any]) -> Dict[str, bool]:
+    items: list[Dict[str, Any]] = []
+    for block in blocks:
+        block_items = block.get("news_items") if isinstance(block, dict) else None
+        if isinstance(block_items, list):
+            items.extend(block_items)
+
+    text = _join_news_text(items).lower()
+    if not text:
+        return {"road": False, "flight": False, "ferry": False}
+
+    road_terms = ("road closure", "road closed", "landslide", "bridge closure", "detour", "reroute", "re-route")
+    flight_terms = ("flight cancellation", "flight cancelled", "flight canceled", "airport closure", "suspended flights")
+    ferry_terms = ("ferry cancellation", "ferry cancelled", "ferry canceled", "port closure", "ferry suspension")
+
+    def _has_any(terms: Tuple[str, ...]) -> bool:
+        return any(term in text for term in terms)
+
+    return {"road": _has_any(road_terms), "flight": _has_any(flight_terms), "ferry": _has_any(ferry_terms)}
+
+
+def _format_distance(distance_km: float | None) -> str:
+    if not isinstance(distance_km, (int, float)):
+        return ""
+    return f"{distance_km:.0f} km"
+
+
+def _format_duration(duration_min: float | None) -> str:
+    if not isinstance(duration_min, (int, float)):
+        return ""
+    hours = duration_min / 60.0
+    if hours >= 10:
+        return f"about {hours:.0f} hours"
+    return f"about {hours:.1f} hours"
+
+
+def _build_transport_guidance(
+    *,
+    origin: str,
+    destination: str,
+    route_summary: Dict[str, Any] | None,
+    route_err: str | None,
+    disruptions: Dict[str, bool],
+) -> str | None:
+    if route_err == "no_routes":
+        detail = "I couldn't find a drivable route between those locations."
+        return (
+            f"{detail} Please check ferry or flight schedules. "
+            "As much as I want to provide you with the said schedules, I currently do not have access."
+        )
+
+    distance_km = route_summary.get("best_distance_km") if isinstance(route_summary, dict) else None
+    duration_min = route_summary.get("best_duration_min") if isinstance(route_summary, dict) else None
+    best_mode = route_summary.get("best_mode") if isinstance(route_summary, dict) else None
+
+    if isinstance(distance_km, (int, float)) and distance_km > _LONG_DISTANCE_KM:
+        distance_text = _format_distance(distance_km)
+        duration_text = _format_duration(duration_min)
+        distance_clause = f" ({distance_text}, {duration_text})" if distance_text and duration_text else ""
+        detail = f"By road, this is a very long trip{distance_clause}."
+        extra = ""
+        if disruptions.get("road"):
+            extra = " There are reports of road closures or disruptions that could affect driving."
+        return (
+            f"{detail}{extra} Please check flight or ferry schedules. "
+            "As much as I want to provide you with the said schedules, I currently do not have access."
+        )
+
+    if disruptions.get("road") and best_mode:
+        mode_label = str(best_mode)
+        distance_text = _format_distance(distance_km)
+        duration_text = _format_duration(duration_min)
+        distance_clause = f" ({distance_text}, {duration_text})" if distance_text and duration_text else ""
+        return (
+            f"Driving by {mode_label} looks like the most practical option{distance_clause}, "
+            "but there are reports of road closures or rerouting that could affect the trip. "
+            "Please check flight or ferry options as a backup, since I don't have schedule access."
+        )
+
+    if disruptions.get("flight") or disruptions.get("ferry"):
+        notes: list[str] = []
+        if disruptions.get("flight"):
+            notes.append("flight disruptions")
+        if disruptions.get("ferry"):
+            notes.append("ferry disruptions")
+        summary = " and ".join(notes)
+        return (
+            f"There are reports of {summary} for this route. "
+            "Please confirm schedules directly; I don't have live schedule access."
+        )
+
+    return None
+
+
 async def _resolve_with_search(
     llm: Any,
     *,
@@ -427,6 +537,24 @@ async def answer_journey_question(
             "Public transit, flights, and ferry schedules are not available in this workflow.",
         ],
     }
+
+    if route_or_transport:
+        disruptions = _collect_disruption_flags(destination_evidence, origin_evidence)
+        guidance = _build_transport_guidance(
+            origin=origin,
+            destination=place,
+            route_summary=route_summary,
+            route_err=route_err or None,
+            disruptions=disruptions,
+        )
+        if guidance:
+            return {
+                "place": place,
+                "final": guidance,
+                "risk_level": None,
+                "travel_advice": [],
+                "sources": [{"type": "weather"}, {"type": "news"}],
+            }
     plan = await _plan_journey_action(llm, place=place, question=question, evidence=current_evidence)
     final, evidence, raw_final = await _resolve_with_search(
         llm,
