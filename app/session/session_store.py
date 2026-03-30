@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, Tuple
 
 from app.redis_client import redis
 from app.session.session_keys import DEFAULT_SESSION_TTL, ONE_HOUR, news_key, sess_key, to_int, weather_key
-from app.session.errors import SessionStoreUnavailable
+from app.session.errors import SessionStoreUnavailable, SESSION_UNAVAILABLE_MESSAGE
 from redis.exceptions import RedisError
 
 log = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ _MAX_RECENT_TURNS = 6
 
 def _require_redis() -> Any:
     if redis is None:
-        raise SessionStoreUnavailable("Session can't be loaded or Session can't be retrieved.")
+        raise SessionStoreUnavailable(SESSION_UNAVAILABLE_MESSAGE)
     return redis
 
 
@@ -32,7 +32,7 @@ async def _fetch_field(session_id: str, field: str, *, log_context: str) -> str 
         return await client.hget(sess_key(session_id), field)
     except RedisError as exc:
         log.warning("Redis read failed in %s [session_id=%s]: %s", log_context, session_id, exc)
-        raise SessionStoreUnavailable("Session can't be loaded or Session can't be retrieved.") from exc
+        raise SessionStoreUnavailable(SESSION_UNAVAILABLE_MESSAGE) from exc
 
 
 async def _fetch_session_map(session_id: str, *, log_context: str) -> Dict[str, Any]:
@@ -42,7 +42,7 @@ async def _fetch_session_map(session_id: str, *, log_context: str) -> Dict[str, 
         return data or {}
     except RedisError as exc:
         log.warning("Redis hgetall failed in %s [session_id=%s]: %s", log_context, session_id, exc)
-        raise SessionStoreUnavailable("Session can't be loaded or Session can't be retrieved.") from exc
+        raise SessionStoreUnavailable(SESSION_UNAVAILABLE_MESSAGE) from exc
 
 
 async def _write_field(
@@ -66,7 +66,7 @@ async def _write_field(
             await client.hdel(sk, field)
     except RedisError as exc:
         log.warning("Redis write failed in %s [session_id=%s]: %s", log_context, session_id, exc)
-        raise SessionStoreUnavailable("Session can't be loaded or Session can't be retrieved.") from exc
+        raise SessionStoreUnavailable(SESSION_UNAVAILABLE_MESSAGE) from exc
 
 
 def _decode_pending_context(raw: str | None) -> Dict[str, str] | None:
@@ -158,7 +158,7 @@ async def mark_sent(
         await client.expire(sk, ttl_seconds)
     except RedisError as exc:
         log.warning("Redis write failed in mark_sent [session_id=%s]: %s", session_id, exc)
-        raise SessionStoreUnavailable("Session can't be loaded or Session can't be retrieved.") from exc
+        raise SessionStoreUnavailable(SESSION_UNAVAILABLE_MESSAGE) from exc
 
 
 async def set_pending_journey_question(

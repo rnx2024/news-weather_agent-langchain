@@ -61,6 +61,7 @@ class OriginFlowE2ETests(unittest.TestCase):
         fake_redis = FakeRedis()
 
         async def resolve_mode_stub(*, question, last_reply, recent_turns, pending_agent_context, place):
+            await asyncio.sleep(0)
             _ = (recent_turns, pending_agent_context, place)
             return classify_answer_mode(question, last_reply)
 
