@@ -7,7 +7,7 @@ import inspect
 import json
 from typing import Any, Awaitable, Callable, Dict, Iterable, Tuple
 
-from app.redis_client import redis, init_redis
+import app.redis_client as redis_client
 from app.session.session_keys import DEFAULT_SESSION_TTL, ONE_HOUR, news_key, sess_key, to_int, weather_key
 from app.session.errors import SessionStoreUnavailable, SESSION_UNAVAILABLE_MESSAGE
 from redis.exceptions import RedisError
@@ -21,9 +21,9 @@ _ACTIVE_ORIGIN_FIELD = "active_origin"
 _MAX_RECENT_TURNS = 6
 
 def _require_redis() -> Any:
-    if redis is None:
+    if redis_client.redis is None:
         raise SessionStoreUnavailable(SESSION_UNAVAILABLE_MESSAGE)
-    return redis
+    return redis_client.redis
 
 
 async def _fetch_field(session_id: str, field: str, *, log_context: str) -> str | None:
@@ -296,10 +296,10 @@ async def get_last_sent_timestamps(session_id: str) -> tuple[int, int, int]:
 
 
 async def ensure_session_store_ready() -> None:
-    if redis is not None:
+    if redis_client.redis is not None:
         return
     try:
-        await init_redis()
+        await redis_client.init_redis()
     except Exception as exc:
         log.warning("Session store init failed: %s", exc)
         raise SessionStoreUnavailable(SESSION_UNAVAILABLE_MESSAGE) from exc
@@ -311,11 +311,11 @@ async def get_or_set(
     ttl_seconds: int,
     compute_fn: Callable[[], Awaitable[str] | str],
 ) -> str:
-    if redis is None:
+    if redis_client.redis is None:
         return await _resolve_compute_value(compute_fn)
 
     try:
-        cached = await redis.get(key)
+        cached = await redis_client.redis.get(key)
         if cached is not None:
             return cached
     except RedisError as exc:
@@ -324,7 +324,7 @@ async def get_or_set(
 
     value = await _resolve_compute_value(compute_fn)
     try:
-        await redis.set(key, value, ex=ttl_seconds)
+        await redis_client.redis.set(key, value, ex=ttl_seconds)
     except RedisError as exc:
         log.warning("Redis set failed in get_or_set [key=%s]: %s", key, exc)
     return value

@@ -1,5 +1,6 @@
 # settings.py
 from __future__ import annotations
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,26 +10,25 @@ class Settings(BaseSettings):
     openrouter_api_key: str
     openweather_api_key: str
     serp_api_key: str
-    tavily_api: str = ""
-    ors_api: str = ""
+    tavily_api: str
+    ors_api: str
 
     # LLM config
-    openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openrouter_model: str = "gpt-4o-mini"
-    openrouter_temperature: float = 0.0
+    openrouter_base_url: str
+    openrouter_model: str
+    openrouter_temperature: float
 
     # External API base URLs
-    openweather_current_url: str = "https://api.openweathermap.org/data/2.5/weather"
-    openmeteo_geocode_url: str = "https://geocoding-api.open-meteo.com/v1/search"
-    openmeteo_forecast_url: str = "https://api.open-meteo.com/v1/forecast"
-    serpapi_search_url: str = "https://serpapi.com/search.json"
-    tavily_search_url: str = "https://api.tavily.com/search"
-    ors_directions_url: str = "https://api.openrouteservice.org/v2/directions"
+    openweather_current_url: str
+    openmeteo_geocode_url: str
+    openmeteo_forecast_url: str
+    serpapi_search_url: str
+    tavily_search_url: str
+    ors_directions_url: str
     frontend_cors_origin: str
 
     # Database / cache
     redis_url: str
-    redis_required: bool = True
     session_secret: str
 
     model_config = SettingsConfigDict(
@@ -36,6 +36,16 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _strip_required_strings(cls, value):
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if not cleaned:
+                raise ValueError("Empty environment values are not allowed")
+            return cleaned
+        return value
 
 
 settings = Settings()

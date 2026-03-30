@@ -49,11 +49,8 @@ async def init_redis() -> None:
 
     redis_url = settings.redis_url
     if not redis_url:
-        if settings.redis_required:
-            log.warning("Redis required but REDIS_URL is missing")
-            raise RuntimeError("REDIS_URL is not set")
-        log.warning("REDIS_URL is not set. Continuing without Redis.")
-        return
+        log.warning("Redis required but REDIS_URL is missing")
+        raise RuntimeError("REDIS_URL is not set")
     target = _safe_redis_target(redis_url)
 
     client = Redis.from_url(
@@ -69,11 +66,8 @@ async def init_redis() -> None:
         await client.ping()
     except (RedisError, OSError) as exc:
         await client.aclose()
-        if settings.redis_required:
-            log.warning("Redis connection failed [target=%s, error=%s]: %s", target, type(exc).__name__, exc)
-            raise RuntimeError("Redis connection failed") from exc
-        log.warning("Redis unavailable at startup [target=%s, error=%s]: %s", target, type(exc).__name__, exc)
-        return
+        log.warning("Redis connection failed [target=%s, error=%s]: %s", target, type(exc).__name__, exc)
+        raise RuntimeError("Redis connection failed") from exc
 
     redis = client
     log.info("Redis connected [target=%s]", target)
