@@ -28,7 +28,7 @@ class Settings(BaseSettings):
 
     # Database / cache
     redis_url: str
-    redis_required: bool = False
+    redis_required: bool = True
     session_secret: str
 
     model_config = SettingsConfigDict(

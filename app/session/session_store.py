@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, Tuple
 
 from app.redis_client import redis
 from app.session.session_keys import DEFAULT_SESSION_TTL, ONE_HOUR, news_key, sess_key, to_int, weather_key
+from app.session.errors import SessionStoreUnavailable
 from redis.exceptions import RedisError
 
 log = logging.getLogger(__name__)
@@ -19,51 +20,29 @@ _ACTIVE_DESTINATION_FIELD = "active_destination"
 _ACTIVE_ORIGIN_FIELD = "active_origin"
 _MAX_RECENT_TURNS = 6
 
-_MEMORY_SESSIONS: dict[str, dict[str, str]] = {}
-_MEMORY_EXPIRY: dict[str, float] = {}
-
-
-def _mem_expire(session_id: str, ttl_seconds: int) -> None:
-    _MEMORY_EXPIRY[session_id] = time.time() + ttl_seconds
-
-
-def _mem_prune(session_id: str) -> None:
-    expiry = _MEMORY_EXPIRY.get(session_id)
-    if expiry is None:
-        return
-    if time.time() >= expiry:
-        _MEMORY_SESSIONS.pop(session_id, None)
-        _MEMORY_EXPIRY.pop(session_id, None)
-
-
-def _mem_get_bucket(session_id: str, *, create: bool = False) -> dict[str, str]:
-    _mem_prune(session_id)
-    bucket = _MEMORY_SESSIONS.get(session_id)
-    if bucket is None and create:
-        bucket = {}
-        _MEMORY_SESSIONS[session_id] = bucket
-    return bucket or {}
+def _require_redis() -> Any:
+    if redis is None:
+        raise SessionStoreUnavailable("Session can't be loaded or Session can't be retrieved.")
+    return redis
 
 
 async def _fetch_field(session_id: str, field: str, *, log_context: str) -> str | None:
-    if redis is None:
-        return _mem_get_bucket(session_id).get(field)
+    client = _require_redis()
     try:
-        return await redis.hget(sess_key(session_id), field)
+        return await client.hget(sess_key(session_id), field)
     except RedisError as exc:
         log.warning("Redis read failed in %s [session_id=%s]: %s", log_context, session_id, exc)
-        return None
+        raise SessionStoreUnavailable("Session can't be loaded or Session can't be retrieved.") from exc
 
 
 async def _fetch_session_map(session_id: str, *, log_context: str) -> Dict[str, Any]:
-    if redis is None:
-        return dict(_mem_get_bucket(session_id))
+    client = _require_redis()
     try:
-        data = await redis.hgetall(sess_key(session_id))
+        data = await client.hgetall(sess_key(session_id))
         return data or {}
     except RedisError as exc:
         log.warning("Redis hgetall failed in %s [session_id=%s]: %s", log_context, session_id, exc)
-        return {}
+        raise SessionStoreUnavailable("Session can't be loaded or Session can't be retrieved.") from exc
 
 
 async def _write_field(
@@ -77,24 +56,17 @@ async def _write_field(
     if value is not None:
         value = str(value)
 
-    if redis is None:
-        bucket = _mem_get_bucket(session_id, create=True)
-        if value:
-            bucket[field] = value
-            _mem_expire(session_id, ttl_seconds)
-        else:
-            bucket.pop(field, None)
-        return
-
+    client = _require_redis()
     sk = sess_key(session_id)
     try:
         if value:
-            await redis.hset(sk, mapping={field: value})
-            await redis.expire(sk, ttl_seconds)
+            await client.hset(sk, mapping={field: value})
+            await client.expire(sk, ttl_seconds)
         else:
-            await redis.hdel(sk, field)
+            await client.hdel(sk, field)
     except RedisError as exc:
         log.warning("Redis write failed in %s [session_id=%s]: %s", log_context, session_id, exc)
+        raise SessionStoreUnavailable("Session can't be loaded or Session can't be retrieved.") from exc
 
 
 def _decode_pending_context(raw: str | None) -> Dict[str, str] | None:
@@ -179,19 +151,14 @@ async def mark_sent(
         )
         mapping[_RECENT_TURNS_FIELD] = json.dumps(recent_turns[-_MAX_RECENT_TURNS:], ensure_ascii=True)
 
-    if redis is None:
-        bucket = _mem_get_bucket(session_id, create=True)
-        bucket.update(mapping)
-        _mem_expire(session_id, ttl_seconds)
-        return
-
+    client = _require_redis()
     sk = sess_key(session_id)
     try:
-        await redis.hset(sk, mapping=mapping)
-        await redis.expire(sk, ttl_seconds)
+        await client.hset(sk, mapping=mapping)
+        await client.expire(sk, ttl_seconds)
     except RedisError as exc:
         log.warning("Redis write failed in mark_sent [session_id=%s]: %s", session_id, exc)
-        return
+        raise SessionStoreUnavailable("Session can't be loaded or Session can't be retrieved.") from exc
 
 
 async def set_pending_journey_question(
@@ -326,6 +293,10 @@ async def get_last_sent_timestamps(session_id: str) -> tuple[int, int, int]:
     n = await _fetch_field(session_id, "last_news_sent_at", log_context="get_last_sent_timestamps")
     c = await _fetch_field(session_id, "last_chat_sent_at", log_context="get_last_sent_timestamps")
     return to_int(w, 0), to_int(n, 0), to_int(c, 0)
+
+
+def ensure_session_store_ready() -> None:
+    _require_redis()
 
 
 async def get_or_set(

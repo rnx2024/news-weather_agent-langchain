@@ -11,6 +11,8 @@ from app.weather.weather_service import get_weather_line
 from app.news.news_service import get_news_items
 from app.settings import settings
 from app.session.session_auth import require_session, sign_session
+from app.session.errors import SessionStoreUnavailable
+from app.session.session_store import ensure_session_store_ready
 from app.tooling.ratelimit import limiter
 
 
@@ -24,6 +26,17 @@ def require_api_key(
 ) -> None:
     if x_api_key != settings.api_key:
         raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+def _raise_session_unavailable() -> None:
+    raise HTTPException(status_code=503, detail="Session can't be loaded or Session can't be retrieved.")
+
+
+def _ensure_session_store_available() -> None:
+    try:
+        ensure_session_store_ready()
+    except SessionStoreUnavailable:
+        _raise_session_unavailable()
 
 
 class AgentRequest(BaseModel):
@@ -83,6 +96,7 @@ async def health(request: Request) -> dict[str, str]:
 @router.post("/session", tags=["session"], dependencies=[Depends(require_api_key)])
 @limiter.limit("30/minute")
 async def create_session(request: Request) -> dict[str, str]:
+    _ensure_session_store_available()
     from uuid import uuid4
 
     session_id = str(uuid4())
@@ -97,13 +111,17 @@ async def agent_endpoint(
     payload: AgentRequest,
     session_id: Annotated[str, Depends(require_session)],
 ) -> AgentResponse:
+    _ensure_session_store_available()
     question = payload.question or ""
 
-    result = await run_agent(
-        session_id=session_id,
-        place=payload.place,
-        question=question,
-    )
+    try:
+        result = await run_agent(
+            session_id=session_id,
+            place=payload.place,
+            question=question,
+        )
+    except SessionStoreUnavailable:
+        _raise_session_unavailable()
 
     return AgentResponse(**result)
 
