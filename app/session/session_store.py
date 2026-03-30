@@ -20,10 +20,19 @@ _ACTIVE_DESTINATION_FIELD = "active_destination"
 _ACTIVE_ORIGIN_FIELD = "active_origin"
 _MAX_RECENT_TURNS = 6
 
+# Test override hook. Production uses redis_client.redis.
+redis: Any | None = None
+
+
+def _active_redis() -> Any | None:
+    return redis if redis is not None else redis_client.redis
+
+
 def _require_redis() -> Any:
-    if redis_client.redis is None:
+    client = _active_redis()
+    if client is None:
         raise SessionStoreUnavailable(SESSION_UNAVAILABLE_MESSAGE)
-    return redis_client.redis
+    return client
 
 
 async def _fetch_field(session_id: str, field: str, *, log_context: str) -> str | None:
@@ -296,7 +305,7 @@ async def get_last_sent_timestamps(session_id: str) -> tuple[int, int, int]:
 
 
 async def ensure_session_store_ready() -> None:
-    if redis_client.redis is not None:
+    if _active_redis() is not None:
         return
     try:
         await redis_client.init_redis()
@@ -311,11 +320,11 @@ async def get_or_set(
     ttl_seconds: int,
     compute_fn: Callable[[], Awaitable[str] | str],
 ) -> str:
-    if redis_client.redis is None:
+    if _active_redis() is None:
         return await _resolve_compute_value(compute_fn)
 
     try:
-        cached = await redis_client.redis.get(key)
+        cached = await _active_redis().get(key)
         if cached is not None:
             return cached
     except RedisError as exc:
@@ -324,7 +333,7 @@ async def get_or_set(
 
     value = await _resolve_compute_value(compute_fn)
     try:
-        await redis_client.redis.set(key, value, ex=ttl_seconds)
+        await _active_redis().set(key, value, ex=ttl_seconds)
     except RedisError as exc:
         log.warning("Redis set failed in get_or_set [key=%s]: %s", key, exc)
     return value
