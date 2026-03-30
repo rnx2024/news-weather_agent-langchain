@@ -74,6 +74,28 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
                                                     )
 
         return result, journey_mock, clear_context_mock, clear_mock, answer_mode_patch
+
+    def _assert_journey_call(
+        self,
+        journey_mock: AsyncMock,
+        *,
+        place: str,
+        question: str,
+        origin: str,
+        latest_user_message: str,
+        pending_question: str | None,
+        conversation_history: list[dict[str, str]],
+    ) -> None:
+        journey_mock.assert_awaited_once_with(
+            unittest.mock.ANY,
+            place,
+            question,
+            origin,
+            route_or_transport=True,
+            latest_user_message=latest_user_message,
+            conversation_history=conversation_history,
+            pending_question=pending_question,
+        )
     async def test_same_destination_followup_uses_general_qa_even_without_recent_turns(self) -> None:
         with patch(
             "app.agent.agent_service.get_last_exchange",
@@ -366,12 +388,11 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("flight is likely more practical", result["final"].lower())
         clear_context_mock.assert_awaited_once_with("session-pending-origin", None)
         clear_mock.assert_awaited_once_with("session-pending-origin", None)
-        journey_mock.assert_awaited_once_with(
-            unittest.mock.ANY,
-            "Davao",
-            "So what's the best transpo for me? Ferry or plane?",
-            "Ilocos Sur",
-            route_or_transport=True,
+        self._assert_journey_call(
+            journey_mock,
+            place="Davao",
+            question="So what's the best transpo for me? Ferry or plane?",
+            origin="Ilocos Sur",
             latest_user_message="Ilocos Sur",
             conversation_history=[],
             pending_question="So what's the best transpo for me? Ferry or plane?",
@@ -396,12 +417,11 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["final"], "Land travel looks practical right now.")
         clear_context_mock.assert_awaited_once_with("session-journey-origin", None)
         clear_mock.assert_awaited_once_with("session-journey-origin", None)
-        journey_mock.assert_awaited_once_with(
-            unittest.mock.ANY,
-            "La Union",
-            "What's the best transport to go there?",
-            "Ilocos Sur",
-            route_or_transport=True,
+        self._assert_journey_call(
+            journey_mock,
+            place="La Union",
+            question="What's the best transport to go there?",
+            origin="Ilocos Sur",
             latest_user_message="Ilocos Sur",
             conversation_history=[],
             pending_question="What's the best transport to go there?",
@@ -424,12 +444,11 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn("flight is more practical", result["final"].lower())
-        journey_mock.assert_awaited_once_with(
-            unittest.mock.ANY,
-            "Cebu",
-            "Okay, so which is best to travel there, by plane or a ferry?",
-            "Ilocos Sur",
-            route_or_transport=True,
+        self._assert_journey_call(
+            journey_mock,
+            place="Cebu",
+            question="Okay, so which is best to travel there, by plane or a ferry?",
+            origin="Ilocos Sur",
             latest_user_message="I mean I will be coming from Ilocos Sur to Cebu, you asked where I will come from",
             conversation_history=[],
             pending_question="Okay, so which is best to travel there, by plane or a ferry?",
@@ -458,12 +477,11 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn("from manila", result["final"].lower())
-        journey_mock.assert_awaited_once_with(
-            unittest.mock.ANY,
-            "Vigan",
-            last_user_question,
-            "Manila",
-            route_or_transport=True,
+        self._assert_journey_call(
+            journey_mock,
+            place="Vigan",
+            question=last_user_question,
+            origin="Manila",
             latest_user_message="I am from Manila",
             conversation_history=[],
             pending_question=None,
