@@ -11,6 +11,7 @@ Redis client lifecycle for SmartNews.
 """
 
 import logging
+from urllib.parse import urlparse
 from typing import Optional
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
@@ -20,6 +21,20 @@ from app.settings import settings
 log = logging.getLogger(__name__)
 
 redis: Optional[Redis] = None
+
+
+def _safe_redis_target(redis_url: str) -> str:
+    try:
+        parsed = urlparse(redis_url)
+        host = parsed.hostname or "unknown-host"
+        scheme = parsed.scheme or "redis"
+        if parsed.port:
+            port = parsed.port
+        else:
+            port = 6380 if scheme == "rediss" else 6379
+        return f"{scheme}://{host}:{port}"
+    except Exception:
+        return "redis://unknown-host"
 
 
 async def init_redis() -> None:
@@ -35,9 +50,11 @@ async def init_redis() -> None:
     redis_url = settings.redis_url
     if not redis_url:
         if settings.redis_required:
+            log.warning("Redis required but REDIS_URL is missing")
             raise RuntimeError("REDIS_URL is not set")
         log.warning("REDIS_URL is not set. Continuing without Redis.")
         return
+    target = _safe_redis_target(redis_url)
 
     client = Redis.from_url(
         redis_url,
@@ -53,11 +70,13 @@ async def init_redis() -> None:
     except (RedisError, OSError) as exc:
         await client.aclose()
         if settings.redis_required:
-            raise RuntimeError(f"Redis connection failed: {exc}") from exc
-        log.warning("Redis unavailable at startup. Continuing without Redis: %s", exc)
+            log.warning("Redis connection failed [target=%s, error=%s]: %s", target, type(exc).__name__, exc)
+            raise RuntimeError("Redis connection failed") from exc
+        log.warning("Redis unavailable at startup [target=%s, error=%s]: %s", target, type(exc).__name__, exc)
         return
 
     redis = client
+    log.info("Redis connected [target=%s]", target)
 
 
 async def close_redis() -> None:

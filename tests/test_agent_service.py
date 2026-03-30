@@ -20,15 +20,15 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         async def hset(self, *args, **kwargs):
             await self._noop()
-            return None
+            return "OK"
 
         async def hdel(self, *args, **kwargs):
             await self._noop()
-            return None
+            return 1 if args or kwargs else 0
 
         async def expire(self, *args, **kwargs):
             await self._noop()
-            return None
+            return bool(args or kwargs)
 
     async def asyncSetUp(self) -> None:
         self._redis_patcher = patch("app.session.session_store.redis", new=self._DummyRedis())
