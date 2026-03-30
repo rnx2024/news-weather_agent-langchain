@@ -3,35 +3,12 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from app.agent.agent_service import run_agent
+from tests.support.redis_fakes import FakeRedis
 
 
 class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
-    class _DummyRedis:
-        async def _noop(self) -> None:
-            await asyncio.sleep(0)
-
-        async def hget(self, *args, **kwargs):
-            await self._noop()
-            return None
-
-        async def hgetall(self, *args, **kwargs):
-            await self._noop()
-            return {}
-
-        async def hset(self, *args, **kwargs):
-            await self._noop()
-            return "OK"
-
-        async def hdel(self, *args, **kwargs):
-            await self._noop()
-            return 1 if args or kwargs else 0
-
-        async def expire(self, *args, **kwargs):
-            await self._noop()
-            return bool(args or kwargs)
-
     async def asyncSetUp(self) -> None:
-        self._redis_patcher = patch("app.session.session_store.redis", new=self._DummyRedis())
+        self._redis_patcher = patch("app.session.session_store.redis", new=FakeRedis())
         self._redis_patcher.start()
         await asyncio.sleep(0)
 
