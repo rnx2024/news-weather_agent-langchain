@@ -111,6 +111,25 @@ async def _run_journey_reasoner(llm: Any, *, place: str, question: str, evidence
     )
 
 
+async def _run_journey_transport_reasoner(llm: Any, *, place: str, question: str, evidence: Dict[str, Any]) -> str:
+    guidance_prompt = (
+        f"{JOURNEY_QA_SYSTEM_PROMPT}\n\n"
+        "Transport guidance:\n"
+        "- If transport_guidance is present, follow it exactly.\n"
+        "- Do not invent flight or ferry schedules.\n"
+        "- If road travel is flagged as too long or infeasible, recommend checking flights/ferries.\n"
+        "- If disruptions are flagged, mention them and suggest alternatives.\n"
+        "- Keep the answer conversational and specific to origin/destination.\n"
+    )
+    return await _invoke_reasoner(
+        llm,
+        guidance_prompt,
+        place=place,
+        question=question,
+        evidence=evidence,
+    )
+
+
 async def _plan_followup_action(llm: Any, *, place: str, question: str, evidence: Dict[str, Any]) -> Dict[str, Any]:
     raw = await _invoke_reasoner(
         llm,
@@ -379,62 +398,167 @@ def _format_duration(duration_min: float | None) -> str:
     return f"about {hours:.1f} hours"
 
 
+def _guidance_no_routes() -> Dict[str, Any]:
+    return {
+        "reason": "no_routes",
+        "message": (
+            "I couldn't find a drivable route between those locations. "
+            "Please check ferry or flight schedules. As much as I want to provide you with the said schedules, "
+            "I currently do not have access."
+        ),
+        "suggested_alternatives": ["flight", "ferry"],
+    }
+
+
+def _guidance_long_distance(
+    *,
+    distance_km: float,
+    duration_min: float | None,
+    road_disruption: bool,
+) -> Dict[str, Any]:
+    distance_text = _format_distance(distance_km)
+    duration_text = _format_duration(duration_min)
+    distance_clause = f" ({distance_text}, {duration_text})" if distance_text and duration_text else ""
+    detail = f"By road, this is a very long trip{distance_clause}."
+    extra = " There are reports of road closures or disruptions that could affect driving." if road_disruption else ""
+    return {
+        "reason": "distance",
+        "distance_km": distance_km,
+        "duration_min": duration_min,
+        "message": (
+            f"{detail}{extra} Please check flight or ferry schedules. "
+            "As much as I want to provide you with the said schedules, I currently do not have access."
+        ),
+        "suggested_alternatives": ["flight", "ferry"],
+    }
+
+
+def _guidance_road_disruption(
+    *,
+    mode_label: str,
+    distance_km: float | None,
+    duration_min: float | None,
+) -> Dict[str, Any]:
+    distance_text = _format_distance(distance_km)
+    duration_text = _format_duration(duration_min)
+    distance_clause = f" ({distance_text}, {duration_text})" if distance_text and duration_text else ""
+    return {
+        "reason": "road_disruption",
+        "distance_km": distance_km,
+        "duration_min": duration_min,
+        "message": (
+            f"Driving by {mode_label} looks like the most practical option{distance_clause}, "
+            "but there are reports of road closures or rerouting that could affect the trip. "
+            "Please check flight or ferry options as a backup, since I don't have schedule access."
+        ),
+        "suggested_alternatives": ["flight", "ferry"],
+    }
+
+
+def _guidance_schedule_disruption(notes: list[str]) -> Dict[str, Any]:
+    summary = " and ".join(notes)
+    return {
+        "reason": "schedule_disruption",
+        "message": (
+            f"There are reports of {summary} for this route. "
+            "Please confirm schedules directly; I don't have live schedule access."
+        ),
+        "suggested_alternatives": ["confirm_schedules"],
+    }
+
+
 def _build_transport_guidance(
     *,
-    origin: str,
-    destination: str,
     route_summary: Dict[str, Any] | None,
     route_err: str | None,
     disruptions: Dict[str, bool],
-) -> str | None:
+) -> Dict[str, Any] | None:
     if route_err == "no_routes":
-        detail = "I couldn't find a drivable route between those locations."
-        return (
-            f"{detail} Please check ferry or flight schedules. "
-            "As much as I want to provide you with the said schedules, I currently do not have access."
-        )
+        return _guidance_no_routes()
 
     distance_km = route_summary.get("best_distance_km") if isinstance(route_summary, dict) else None
     duration_min = route_summary.get("best_duration_min") if isinstance(route_summary, dict) else None
     best_mode = route_summary.get("best_mode") if isinstance(route_summary, dict) else None
 
     if isinstance(distance_km, (int, float)) and distance_km > _LONG_DISTANCE_KM:
-        distance_text = _format_distance(distance_km)
-        duration_text = _format_duration(duration_min)
-        distance_clause = f" ({distance_text}, {duration_text})" if distance_text and duration_text else ""
-        detail = f"By road, this is a very long trip{distance_clause}."
-        extra = ""
-        if disruptions.get("road"):
-            extra = " There are reports of road closures or disruptions that could affect driving."
-        return (
-            f"{detail}{extra} Please check flight or ferry schedules. "
-            "As much as I want to provide you with the said schedules, I currently do not have access."
+        return _guidance_long_distance(
+            distance_km=distance_km,
+            duration_min=duration_min,
+            road_disruption=disruptions.get("road", False),
         )
 
     if disruptions.get("road") and best_mode:
-        mode_label = str(best_mode)
-        distance_text = _format_distance(distance_km)
-        duration_text = _format_duration(duration_min)
-        distance_clause = f" ({distance_text}, {duration_text})" if distance_text and duration_text else ""
-        return (
-            f"Driving by {mode_label} looks like the most practical option{distance_clause}, "
-            "but there are reports of road closures or rerouting that could affect the trip. "
-            "Please check flight or ferry options as a backup, since I don't have schedule access."
+        return _guidance_road_disruption(
+            mode_label=str(best_mode),
+            distance_km=distance_km,
+            duration_min=duration_min,
         )
 
-    if disruptions.get("flight") or disruptions.get("ferry"):
-        notes: list[str] = []
-        if disruptions.get("flight"):
-            notes.append("flight disruptions")
-        if disruptions.get("ferry"):
-            notes.append("ferry disruptions")
-        summary = " and ".join(notes)
-        return (
-            f"There are reports of {summary} for this route. "
-            "Please confirm schedules directly; I don't have live schedule access."
-        )
+    notes: list[str] = []
+    if disruptions.get("flight"):
+        notes.append("flight disruptions")
+    if disruptions.get("ferry"):
+        notes.append("ferry disruptions")
+    if notes:
+        return _guidance_schedule_disruption(notes)
 
     return None
+
+
+def _build_route_summary(route_plan: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    if not route_plan:
+        return None
+    routes = route_plan.get("routes") or []
+    return {
+        "best_mode": route_plan.get("best_mode"),
+        "best_profile": route_plan.get("best_profile"),
+        "best_distance_km": route_plan.get("best_distance_km"),
+        "best_duration_min": route_plan.get("best_duration_min"),
+        "modes": [
+            {
+                "mode": r.get("mode"),
+                "distance_km": r.get("distance_km"),
+                "duration_min": r.get("duration_min"),
+            }
+            for r in routes
+            if isinstance(r, dict)
+        ],
+    }
+
+
+def _build_midpoint_weather(route_plan: Dict[str, Any] | None, horizon: str) -> Dict[str, Any] | None:
+    if not route_plan:
+        return None
+    midpoint = route_plan.get("midpoint") or {}
+    lat = midpoint.get("lat")
+    lon = midpoint.get("lon")
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return None
+    summary, _mwerr = get_weather_summary_by_coords(
+        float(lat),
+        float(lon),
+        horizon,
+        label="En route midpoint",
+    )
+    return summary
+
+
+def _get_transport_guidance(
+    *,
+    route_or_transport: bool,
+    destination_evidence: Dict[str, Any],
+    origin_evidence: Dict[str, Any],
+    route_summary: Dict[str, Any] | None,
+    route_err: str | None,
+) -> Dict[str, Any] | None:
+    if not route_or_transport:
+        return None
+    disruptions = _collect_disruption_flags(destination_evidence, origin_evidence)
+    return _build_transport_guidance(
+        route_summary=route_summary,
+        route_err=route_err or None,
+        disruptions=disruptions,
+    )
 
 
 async def _resolve_with_search(
@@ -484,35 +608,8 @@ async def answer_journey_question(
     origin_evidence = _gather_place_evidence(origin, horizon)
 
     route_plan, route_err = plan_route(origin, place)
-    route_summary = None
-    midpoint_weather = None
-    if route_plan:
-        routes = route_plan.get("routes") or []
-        route_summary = {
-            "best_mode": route_plan.get("best_mode"),
-            "best_profile": route_plan.get("best_profile"),
-            "best_distance_km": route_plan.get("best_distance_km"),
-            "best_duration_min": route_plan.get("best_duration_min"),
-            "modes": [
-                {
-                    "mode": r.get("mode"),
-                    "distance_km": r.get("distance_km"),
-                    "duration_min": r.get("duration_min"),
-                }
-                for r in routes
-                if isinstance(r, dict)
-            ],
-        }
-        midpoint = route_plan.get("midpoint") or {}
-        lat = midpoint.get("lat")
-        lon = midpoint.get("lon")
-        if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
-            midpoint_weather, _mwerr = get_weather_summary_by_coords(
-                float(lat),
-                float(lon),
-                horizon,
-                label="En route midpoint",
-            )
+    route_summary = _build_route_summary(route_plan)
+    midpoint_weather = _build_midpoint_weather(route_plan, horizon)
 
     current_evidence = {
         "mode": "journey_planning",
@@ -538,23 +635,14 @@ async def answer_journey_question(
         ],
     }
 
-    if route_or_transport:
-        disruptions = _collect_disruption_flags(destination_evidence, origin_evidence)
-        guidance = _build_transport_guidance(
-            origin=origin,
-            destination=place,
-            route_summary=route_summary,
-            route_err=route_err or None,
-            disruptions=disruptions,
-        )
-        if guidance:
-            return {
-                "place": place,
-                "final": guidance,
-                "risk_level": None,
-                "travel_advice": [],
-                "sources": [{"type": "weather"}, {"type": "news"}],
-            }
+    transport_guidance = _get_transport_guidance(
+        route_or_transport=route_or_transport,
+        destination_evidence=destination_evidence,
+        origin_evidence=origin_evidence,
+        route_summary=route_summary,
+        route_err=route_err,
+    )
+    current_evidence["transport_guidance"] = transport_guidance
     plan = await _plan_journey_action(llm, place=place, question=question, evidence=current_evidence)
     final, evidence, raw_final = await _resolve_with_search(
         llm,
@@ -563,7 +651,7 @@ async def answer_journey_question(
         plan=plan,
         base_evidence=current_evidence,
         build_query=lambda: _build_journey_targeted_query(origin, place, question, pending_question),
-        run_reasoner=_run_journey_reasoner,
+        run_reasoner=_run_journey_transport_reasoner if transport_guidance else _run_journey_reasoner,
         search_fn=search_news,
     )
 
