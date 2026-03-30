@@ -636,6 +636,131 @@ def _apply_followup_tool_includes(
     return include_weather, include_news
 
 
+async def _handle_pre_agent_paths(
+    *,
+    session_id: str,
+    place: str,
+    question: Optional[str],
+    last_reply: Optional[str],
+    recent_turns: List[Dict[str, str]],
+    answer_mode: AnswerMode,
+    same_destination_followup: bool,
+    effective_question: Optional[str],
+    pending_question: Optional[str],
+    origin: Optional[str],
+    route_or_transport: bool,
+    debug: bool,
+) -> Optional[Dict[str, Any]]:
+    result = await _maybe_handle_followup_reference(
+        session_id=session_id,
+        place=place,
+        question=question,
+        last_reply=last_reply,
+        debug=debug,
+    )
+    if result:
+        return result
+
+    result = await _maybe_handle_followup_modes(
+        session_id=session_id,
+        place=place,
+        question=question,
+        last_reply=last_reply,
+        recent_turns=recent_turns,
+        answer_mode=answer_mode,
+        same_destination_followup=same_destination_followup,
+        debug=debug,
+    )
+    if result:
+        return result
+
+    return await _maybe_handle_journey_mode(
+        session_id=session_id,
+        place=place,
+        question=question,
+        effective_question=effective_question,
+        last_reply=last_reply,
+        recent_turns=recent_turns,
+        pending_question=pending_question,
+        answer_mode=answer_mode,
+        origin=origin,
+        route_or_transport=route_or_transport,
+        debug=debug,
+    )
+
+
+async def _run_broad_agent(
+    *,
+    session_id: str,
+    place: str,
+    question: Optional[str],
+    effective_question: Optional[str],
+    origin: Optional[str],
+    answer_mode: AnswerMode,
+    route_or_transport: bool,
+    last_user: Optional[str],
+    last_reply: Optional[str],
+    recent_turns: List[Dict[str, str]],
+    debug: bool,
+) -> Dict[str, Any]:
+    user_prompt = _build_user_prompt(place, effective_question, origin)
+
+    include_weather, include_news = decide_tool_includes(effective_question)
+    force_weather, force_news = detect_force_signals(effective_question or "")
+    allow_weather, allow_news = await should_include(session_id, force_weather, force_news)
+    include_weather, include_news = _apply_followup_tool_includes(
+        answer_mode,
+        include_weather,
+        include_news,
+    )
+
+    if include_weather and not allow_weather and answer_mode == "travel_brief":
+        include_weather = False
+    if include_news and not allow_news and answer_mode == "travel_brief":
+        include_news = False
+
+    policy_lines = _build_policy_lines(
+        place=place,
+        answer_mode=answer_mode,
+        include_weather=include_weather,
+        include_news=include_news,
+        last_user=last_user,
+        last_reply=last_reply,
+        recent_turns=recent_turns,
+        origin=origin,
+        route_or_transport=route_or_transport,
+    )
+
+    user_prompt = "\n".join(policy_lines) + "\n\n---\n\n" + user_prompt
+    app = _get_react_app(include_weather=include_weather, include_news=include_news)
+    state: Dict[str, Any] = await app.ainvoke({"messages": [{"role": "user", "content": user_prompt}]})
+    messages = state.get("messages", []) or []
+    final_text = _extract_final_message(messages)
+
+    called_tools = _extract_called_tools(messages)
+    await mark_tools_called(
+        session_id,
+        tool_names=called_tools,
+        user_message=question,
+        agent_reply=final_text,
+    )
+    await set_active_destination(session_id, place)
+
+    brief = _extract_structured_brief(messages, place)
+    result: Dict[str, Any] = {
+        "place": str(brief.get("place") or place),
+        "final": final_text or str(brief.get("final") or ""),
+        "risk_level": (
+            str(brief.get("risk_level") or "low") if answer_mode == "travel_brief" else None
+        ),
+        "travel_advice": cast(list[str], brief.get("travel_advice") or []) if answer_mode == "travel_brief" else [],
+        "sources": cast(list[dict[str, str]], brief.get("sources") or []),
+    }
+    if debug:
+        result["debug"] = _build_debug(messages)
+    return result
+
+
 # -----------------------------------------------------
 # Public function: run_agent
 # -----------------------------------------------------
@@ -701,17 +826,7 @@ async def run_agent(
         await set_active_origin(session_id, origin)
     route_or_transport = asks_route_or_transport(effective_question)
 
-    result = await _maybe_handle_followup_reference(
-        session_id=session_id,
-        place=place,
-        question=question,
-        last_reply=last_reply,
-        debug=debug,
-    )
-    if result:
-        return result
-
-    result = await _maybe_handle_followup_modes(
+    result = await _handle_pre_agent_paths(
         session_id=session_id,
         place=place,
         question=question,
@@ -719,88 +834,25 @@ async def run_agent(
         recent_turns=recent_turns,
         answer_mode=answer_mode,
         same_destination_followup=same_destination_followup,
+        effective_question=effective_question,
+        pending_question=pending_question,
+        origin=origin,
+        route_or_transport=route_or_transport,
         debug=debug,
     )
     if result:
         return result
 
-    result = await _maybe_handle_journey_mode(
+    return await _run_broad_agent(
         session_id=session_id,
         place=place,
         question=question,
         effective_question=effective_question,
-        last_reply=last_reply,
-        recent_turns=recent_turns,
-        pending_question=pending_question,
-        answer_mode=answer_mode,
         origin=origin,
-        route_or_transport=route_or_transport,
-        debug=debug,
-    )
-    if result:
-        return result
-
-    user_prompt = _build_user_prompt(place, effective_question, origin)
-
-    # decide tool availability for this turn
-    include_weather, include_news = decide_tool_includes(effective_question)
-
-    # session-aware suppression (Redis)
-    force_weather, force_news = detect_force_signals(effective_question or "")
-    allow_weather, allow_news = await should_include(session_id, force_weather, force_news)
-
-    include_weather, include_news = _apply_followup_tool_includes(
-        answer_mode,
-        include_weather,
-        include_news,
-    )
-
-    if include_weather and not allow_weather and answer_mode == "travel_brief":
-        include_weather = False
-    if include_news and not allow_news and answer_mode == "travel_brief":
-        include_news = False
-
-    policy_lines = _build_policy_lines(
-        place=place,
         answer_mode=answer_mode,
-        include_weather=include_weather,
-        include_news=include_news,
+        route_or_transport=route_or_transport,
         last_user=last_user,
         last_reply=last_reply,
         recent_turns=recent_turns,
-        origin=origin,
-        route_or_transport=route_or_transport,
+        debug=debug,
     )
-
-    user_prompt = "\n".join(policy_lines) + "\n\n---\n\n" + user_prompt
-
-    # use a gated agent (hard enforcement)
-    app = _get_react_app(include_weather=include_weather, include_news=include_news)
-
-    state: Dict[str, Any] = await app.ainvoke({"messages": [{"role": "user", "content": user_prompt}]})
-    messages = state.get("messages", []) or []
-    final_text = _extract_final_message(messages)
-
-    # persist session state based on actual tool calls
-    called_tools = _extract_called_tools(messages)
-    await mark_tools_called(
-        session_id,
-        tool_names=called_tools,
-        user_message=question,
-        agent_reply=final_text,
-    )
-    await set_active_destination(session_id, place)
-
-    brief = _extract_structured_brief(messages, place)
-    result: Dict[str, Any] = {
-        "place": str(brief.get("place") or place),
-        "final": final_text or str(brief.get("final") or ""),
-        "risk_level": (
-            str(brief.get("risk_level") or "low") if answer_mode == "travel_brief" else None
-        ),
-        "travel_advice": cast(list[str], brief.get("travel_advice") or []) if answer_mode == "travel_brief" else [],
-        "sources": cast(list[dict[str, str]], brief.get("sources") or []),
-    }
-    if debug:
-        result["debug"] = _build_debug(messages)
-    return result

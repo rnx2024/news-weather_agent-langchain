@@ -299,28 +299,10 @@ def classify_answer_mode(question: Optional[str], last_reply: Optional[str] = No
     q = question.lower()
     last = (last_reply or "").lower()
 
-    if _has_any_term(last, _ORIGIN_QUESTION_TERMS) and extract_origin(question, last_reply):
+    if _should_force_journey(question, q, last, last_reply):
         return "journey_planning"
 
-    if is_journey_planning_question(question):
-        return "journey_planning"
-
-    has_weather = _has_any_term(q, _WEATHER_TERMS)
-    has_news = _has_any_term(q, _NEWS_TERMS)
-
-    inferred = _infer_followup_topic(q, last)
-    if inferred == "journey":
-        return "journey_planning"
-    if inferred == "news":
-        has_news = True
-    elif inferred == "weather":
-        has_weather = True
-
-    if not has_weather and not has_news:
-        if _looks_like_news_followup(q, last):
-            has_news = True
-        elif _looks_like_weather_followup(q, last):
-            has_weather = True
+    has_weather, has_news = _resolve_followup_signals(q, last)
 
     if has_news and not has_weather:
         return "news_followup"
@@ -341,6 +323,38 @@ def _infer_followup_topic(question: str, last_reply: str) -> str:
     if _has_any_term(last_reply, _ORIGIN_QUESTION_TERMS):
         return "journey"
     return ""
+
+
+def _should_force_journey(
+    question: str,
+    question_lc: str,
+    last_reply_lc: str,
+    last_reply: Optional[str],
+) -> bool:
+    if _has_any_term(last_reply_lc, _ORIGIN_QUESTION_TERMS) and extract_origin(question, last_reply):
+        return True
+    if is_journey_planning_question(question):
+        return True
+    return _infer_followup_topic(question_lc, last_reply_lc) == "journey"
+
+
+def _resolve_followup_signals(question_lc: str, last_reply_lc: str) -> tuple[bool, bool]:
+    has_weather = _has_any_term(question_lc, _WEATHER_TERMS)
+    has_news = _has_any_term(question_lc, _NEWS_TERMS)
+
+    inferred = _infer_followup_topic(question_lc, last_reply_lc)
+    if inferred == "news":
+        has_news = True
+    elif inferred == "weather":
+        has_weather = True
+
+    if not has_weather and not has_news:
+        if _looks_like_news_followup(question_lc, last_reply_lc):
+            has_news = True
+        elif _looks_like_weather_followup(question_lc, last_reply_lc):
+            has_weather = True
+
+    return has_weather, has_news
 
 
 def needs_followup_reference_clarification(question: Optional[str], last_reply: Optional[str] = None) -> bool:
