@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.agent.agent_prompts import (
     FOLLOWUP_ACTION_SYSTEM_PROMPT,
@@ -318,6 +318,37 @@ def _detect_weather_horizon(question: str) -> str:
     return "today"
 
 
+async def _resolve_with_search(
+    llm: Any,
+    *,
+    place: str,
+    question: str,
+    plan: Dict[str, Any],
+    base_evidence: Dict[str, Any],
+    build_query: Callable[[], str],
+    run_reasoner: Callable[..., Any],
+    search_fn: Callable[[str, str], Tuple[List[Dict[str, Any]], str]],
+    enrich_evidence: Optional[Callable[[Dict[str, Any], List[Dict[str, Any]]], Dict[str, Any]]] = None,
+) -> tuple[str, Dict[str, Any], str]:
+    if plan.get("answered") and plan.get("answer"):
+        final = str(plan.get("answer") or "")
+        return final, base_evidence, final
+
+    targeted_query = str(plan.get("search_query") or "") or build_query()
+    targeted_items, targeted_err = search_fn(targeted_query, place)
+    evidence = {
+        **base_evidence,
+        "targeted_search_query": targeted_query,
+        "targeted_search_error": targeted_err or None,
+        "targeted_news_items": targeted_items[:3],
+    }
+    if enrich_evidence:
+        evidence = enrich_evidence(evidence, targeted_items)
+
+    final = await run_reasoner(llm, place=place, question=question, evidence=evidence)
+    return final, evidence, final
+
+
 async def answer_journey_question(
     llm: Any,
     place: str,
@@ -388,21 +419,16 @@ async def answer_journey_question(
         ],
     }
     plan = await _plan_journey_action(llm, place=place, question=question, evidence=current_evidence)
-    if plan["answered"] and plan["answer"]:
-        final = plan["answer"]
-        raw_final = final
-        evidence = current_evidence
-    else:
-        targeted_query = plan["search_query"] or _build_journey_targeted_query(origin, place, question, pending_question)
-        targeted_news_items, targeted_err = search_news(targeted_query, place)
-        evidence = {
-            **current_evidence,
-            "targeted_search_query": targeted_query,
-            "targeted_search_error": targeted_err or None,
-            "targeted_news_items": targeted_news_items[:3],
-        }
-        final = await _run_journey_reasoner(llm, place=place, question=question, evidence=evidence)
-        raw_final = final
+    final, evidence, raw_final = await _resolve_with_search(
+        llm,
+        place=place,
+        question=question,
+        plan=plan,
+        base_evidence=current_evidence,
+        build_query=lambda: _build_journey_targeted_query(origin, place, question, pending_question),
+        run_reasoner=_run_journey_reasoner,
+        search_fn=search_news,
+    )
 
     if not final:
         if route_or_transport:
@@ -445,26 +471,26 @@ async def answer_news_followup(
     }
 
     plan = await _plan_followup_action(llm, place=place, question=question, evidence=current_evidence)
-    if plan["answered"] and plan["answer"]:
-        final = plan["answer"]
-        raw_final = final
-        evidence = current_evidence
-    else:
-        targeted_query = plan["search_query"] or _build_news_targeted_query(place, question, matched_item, last_reply)
-        targeted_items, targeted_err = search_news(targeted_query, place)
-        targeted_match = _match_news_item(question, last_reply, targeted_items)
-        evidence = {
-            **current_evidence,
+    def _enrich_news_evidence(evidence: Dict[str, Any], items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return {
+            **evidence,
             "used_targeted_search": True,
-            "targeted_search_query": targeted_query,
-            "targeted_search_error": targeted_err or None,
-            "targeted_news_items": targeted_items[:3],
-            "matched_targeted_item": targeted_match,
+            "matched_targeted_item": _match_news_item(question, last_reply, items),
         }
-        final = await _run_followup_reasoner(llm, place=place, question=question, evidence=evidence)
-        raw_final = final
-        if not final:
-            final = f"I couldn't find a confirmed answer in the current news for {place}."
+
+    final, evidence, raw_final = await _resolve_with_search(
+        llm,
+        place=place,
+        question=question,
+        plan=plan,
+        base_evidence=current_evidence,
+        build_query=lambda: _build_news_targeted_query(place, question, matched_item, last_reply),
+        run_reasoner=_run_followup_reasoner,
+        search_fn=search_news,
+        enrich_evidence=_enrich_news_evidence,
+    )
+    if not final and not (plan.get("answered") and plan.get("answer")):
+        final = f"I couldn't find a confirmed answer in the current news for {place}."
 
     final = _soften_followup_tone(final, place)
     final = _condense_direct_answer(final)
@@ -496,26 +522,26 @@ async def answer_general_followup(
     }
 
     plan = await _plan_followup_action(llm, place=place, question=question, evidence=current_evidence)
-    if plan["answered"] and plan["answer"]:
-        final = plan["answer"]
-        raw_final = final
-        evidence = current_evidence
-    else:
-        targeted_query = plan["search_query"] or _build_news_targeted_query(place, question, matched_item, last_reply)
-        targeted_items, targeted_err = search_news(targeted_query, place)
-        targeted_match = _match_news_item(question, last_reply, targeted_items)
-        evidence = {
-            **current_evidence,
+    def _enrich_general_evidence(evidence: Dict[str, Any], items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return {
+            **evidence,
             "used_targeted_search": True,
-            "targeted_search_query": targeted_query,
-            "targeted_search_error": targeted_err or None,
-            "targeted_news_items": targeted_items[:3],
-            "matched_targeted_item": targeted_match,
+            "matched_targeted_item": _match_news_item(question, last_reply, items),
         }
-        final = await _run_followup_reasoner(llm, place=place, question=question, evidence=evidence)
-        raw_final = final
-        if not final:
-            final = f"I couldn't find a confirmed answer from the data I gathered so far for {place}."
+
+    final, evidence, raw_final = await _resolve_with_search(
+        llm,
+        place=place,
+        question=question,
+        plan=plan,
+        base_evidence=current_evidence,
+        build_query=lambda: _build_news_targeted_query(place, question, matched_item, last_reply),
+        run_reasoner=_run_followup_reasoner,
+        search_fn=search_news,
+        enrich_evidence=_enrich_general_evidence,
+    )
+    if not final and not (plan.get("answered") and plan.get("answer")):
+        final = f"I couldn't find a confirmed answer from the data I gathered so far for {place}."
 
     final = _soften_followup_tone(final, place)
     final = _condense_direct_answer(final)

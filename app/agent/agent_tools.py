@@ -67,6 +67,18 @@ class RoutePlanInput(BaseModel):
     profiles: Optional[list[str]] = None
 
 
+def _format_news_items(headlines: list[dict[str, Any]], *, empty_message: str) -> str:
+    if not headlines:
+        return empty_message
+
+    return "\n".join(
+        f"- {h['title']} ({h['source']}, {h['date']})"
+        + (f" — {h['snippet'][:160].strip()}" if h.get("snippet") else "")
+        + (f" -> {h['link']}" if h.get("link") else "")
+        for h in headlines
+    )
+
+
 # -----------------------------
 # Tools
 # -----------------------------
@@ -154,15 +166,7 @@ def news_tool(place: str) -> str:
         headlines, err = get_news_items(place)
         if err:
             raise RuntimeError(err)
-        if not headlines:
-            return "No recent news."
-
-        return "\n".join(
-            f"- {h['title']} ({h['source']}, {h['date']})"
-            + (f" — {h['snippet'][:160].strip()}" if h.get("snippet") else "")
-            + (f" -> {h['link']}" if h.get("link") else "")
-            for h in headlines
-        )
+        return _format_news_items(headlines, empty_message="No recent news.")
 
     out = retry(call)
     if isinstance(out, str) and not is_error_result(out):
@@ -192,15 +196,7 @@ def news_search_tool(query: str, place_hint: Optional[str] = None) -> str:
         headlines, err = search_news(q, hint or None)
         if err:
             raise RuntimeError(err)
-        if not headlines:
-            return "No targeted news results."
-
-        return "\n".join(
-            f"- {h['title']} ({h['source']}, {h['date']})"
-            + (f" — {h['snippet'][:160].strip()}" if h.get("snippet") else "")
-            + (f" -> {h['link']}" if h.get("link") else "")
-            for h in headlines
-        )
+        return _format_news_items(headlines, empty_message="No targeted news results.")
 
     out = retry(call)
     if isinstance(out, str) and not is_error_result(out):

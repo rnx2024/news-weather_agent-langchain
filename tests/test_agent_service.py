@@ -5,6 +5,30 @@ from app.agent.agent_service import run_agent
 
 
 class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _brief(
+        place: str,
+        *,
+        weather_text: str = "Clear",
+        final: str | None = None,
+        risk_level: str = "low",
+        travel_advice: list[str] | None = None,
+        sources: list[dict[str, str]] | None = None,
+        weather_reasons: list[str] | None = None,
+        news_reasons: list[str] | None = None,
+        news_items: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        return {
+            "place": place,
+            "final": final or f"{place} looks generally fine for travel today.",
+            "risk_level": risk_level,
+            "travel_advice": travel_advice or [],
+            "sources": sources or [{"type": "weather"}, {"type": "news"}],
+            "weather_summary": {"current": {"weather_text": weather_text}, "day": {}},
+            "weather_reasons": weather_reasons or [],
+            "news_reasons": news_reasons or [],
+            "news_items": news_items or [],
+        }
     async def test_same_destination_followup_uses_general_qa_even_without_recent_turns(self) -> None:
         with patch(
             "app.agent.agent_service.get_last_exchange",
@@ -417,17 +441,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_journey_transport_fallback_uses_gathered_data_wording(self) -> None:
-        brief = {
-            "place": "La Union",
-            "final": "La Union looks generally fine for travel today.",
-            "risk_level": "low",
-            "travel_advice": [],
-            "sources": [{"type": "weather"}, {"type": "news"}],
-            "weather_summary": {"current": {"weather_text": "Broken clouds"}, "day": {}},
-            "weather_reasons": [],
-            "news_reasons": [],
-            "news_items": [],
-        }
+        brief = self._brief("La Union", weather_text="Broken clouds")
         with patch("app.agent.followup_qa.build_travel_brief", return_value=(brief, "")):
             with patch(
                 "app.agent.followup_qa._plan_journey_action",
@@ -446,28 +460,11 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("data i gathered so far", result["final"].lower())
 
     async def test_journey_uses_current_evidence_before_search(self) -> None:
-        destination_brief = {
-            "place": "Cebu",
-            "final": "Cebu looks generally fine for travel today.",
-            "risk_level": "low",
-            "travel_advice": [],
-            "sources": [{"type": "weather"}, {"type": "news"}],
-            "weather_summary": {"current": {"weather_text": "Clear"}, "day": {}},
-            "weather_reasons": [],
-            "news_reasons": [],
-            "news_items": [],
-        }
-        origin_brief = {
-            "place": "Ilocos Sur",
-            "final": "Ilocos Sur looks generally fine for departure today.",
-            "risk_level": "low",
-            "travel_advice": [],
-            "sources": [{"type": "weather"}, {"type": "news"}],
-            "weather_summary": {"current": {"weather_text": "Clear"}, "day": {}},
-            "weather_reasons": [],
-            "news_reasons": [],
-            "news_items": [],
-        }
+        destination_brief = self._brief("Cebu")
+        origin_brief = self._brief(
+            "Ilocos Sur",
+            final="Ilocos Sur looks generally fine for departure today.",
+        )
         with patch("app.agent.followup_qa.build_travel_brief", side_effect=[(destination_brief, ""), (origin_brief, "")]):
             with patch(
                 "app.agent.followup_qa._plan_journey_action",
@@ -492,23 +489,17 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         reasoner_mock.assert_not_awaited()
 
     async def test_journey_answer_appends_source_link_when_reasoner_mentions_article(self) -> None:
-        brief = {
-            "place": "La Union",
-            "final": "La Union looks generally fine for travel today.",
-            "risk_level": "low",
-            "travel_advice": [],
-            "sources": [{"type": "weather"}, {"type": "news"}],
-            "weather_summary": {"current": {"weather_text": "Broken clouds"}, "day": {}},
-            "weather_reasons": [],
-            "news_reasons": [],
-            "news_items": [
+        brief = self._brief(
+            "La Union",
+            weather_text="Broken clouds",
+            news_items=[
                 {
                     "title": "Roadworks expected near San Fernando",
                     "snippet": "Minor roadworks may affect part of the corridor.",
                     "link": "https://example.com/roadworks",
                 }
             ],
-        }
+        )
         with patch("app.agent.followup_qa.build_travel_brief", return_value=(brief, "")):
             with patch(
                 "app.agent.followup_qa._plan_journey_action",
@@ -528,17 +519,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("source: https://example.com/roadworks", result["final"].lower())
 
     async def test_journey_transport_search_uses_user_question_terms(self) -> None:
-        brief = {
-            "place": "Davao",
-            "final": "Davao looks generally fine for travel today.",
-            "risk_level": "low",
-            "travel_advice": [],
-            "sources": [{"type": "weather"}, {"type": "news"}],
-            "weather_summary": {"current": {"weather_text": "Broken clouds"}, "day": {}},
-            "weather_reasons": [],
-            "news_reasons": [],
-            "news_items": [],
-        }
+        brief = self._brief("Davao", weather_text="Broken clouds")
         with patch("app.agent.followup_qa.build_travel_brief", return_value=(brief, "")):
             with patch(
                 "app.agent.followup_qa._plan_journey_action",
@@ -787,17 +768,14 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["final"], "I couldn't find a confirmed answer in the current news for Cebu.")
 
     async def test_general_followup_does_not_pass_concern_summary_into_qa_evidence(self) -> None:
-        brief = {
-            "place": "Batanes",
-            "final": "Batanes looks fine for travel this weekend.",
-            "risk_level": "low",
-            "travel_advice": ["Stay hydrated."],
-            "sources": [{"type": "weather"}],
-            "weather_summary": {"current": {"weather_text": "Overcast"}, "day": {}},
-            "weather_reasons": ["Warm temperatures."],
-            "news_reasons": [],
-            "news_items": [],
-        }
+        brief = self._brief(
+            "Batanes",
+            weather_text="Overcast",
+            final="Batanes looks fine for travel this weekend.",
+            sources=[{"type": "weather"}],
+            travel_advice=["Stay hydrated."],
+            weather_reasons=["Warm temperatures."],
+        )
 
         async def inspect_plan(_llm, *, place, question, evidence):
             self.assertEqual(place, "Batanes")
@@ -847,17 +825,14 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         search_mock.assert_called_once()
 
     async def test_general_followup_resort_question_does_not_fall_back_to_travel_recap(self) -> None:
-        brief = {
-            "place": "Batanes",
-            "final": "Batanes looks fine for travel this weekend.",
-            "risk_level": "low",
-            "travel_advice": ["Stay hydrated."],
-            "sources": [{"type": "weather"}],
-            "weather_summary": {"current": {"weather_text": "Overcast"}, "day": {}},
-            "weather_reasons": ["Warm temperatures."],
-            "news_reasons": [],
-            "news_items": [],
-        }
+        brief = self._brief(
+            "Batanes",
+            weather_text="Overcast",
+            final="Batanes looks fine for travel this weekend.",
+            sources=[{"type": "weather"}],
+            travel_advice=["Stay hydrated."],
+            weather_reasons=["Warm temperatures."],
+        )
         with patch("app.agent.agent_service.get_last_exchange", new=AsyncMock(return_value=(None, "Traveling to Batanes this weekend is considered a good idea."))):
             with patch(
                 "app.agent.agent_service.get_recent_turns",
