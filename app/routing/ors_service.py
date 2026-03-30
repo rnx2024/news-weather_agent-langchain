@@ -84,6 +84,43 @@ def _fetch_route(profile: str, start: Tuple[float, float], end: Tuple[float, flo
     }, ""
 
 
+def _resolve_location(place: str, role: str) -> Tuple[Dict[str, Any] | None, str]:
+    loc, err = geocode_place(place)
+    if err or not loc:
+        return None, f"{role}_geocode_failed:{err or 'unknown'}"
+
+    lat = loc.get("latitude")
+    lon = loc.get("longitude")
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return None, "invalid_geocoding_coordinates"
+
+    return {
+        "loc": loc,
+        "lat": float(lat),
+        "lon": float(lon),
+    }, ""
+
+
+def _collect_routes(
+    profiles: Tuple[str, ...],
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+    routes: List[Dict[str, Any]] = []
+    errors: Dict[str, str] = {}
+    for profile in profiles:
+        route, err = _fetch_route(profile, start, end)
+        if route:
+            routes.append(route)
+        else:
+            errors[profile] = err or "route_error"
+    return routes, errors
+
+
+def _select_best_route(routes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return min(routes, key=lambda r: r.get("raw_duration_s") or float("inf"))
+
+
 def plan_route(
     origin: str,
     destination: str,
@@ -92,48 +129,33 @@ def plan_route(
     if not settings.ors_api:
         return None, "missing_ors_api"
 
-    origin_loc, oerr = geocode_place(origin)
-    if oerr or not origin_loc:
-        return None, f"origin_geocode_failed:{oerr or 'unknown'}"
+    origin_data, oerr = _resolve_location(origin, "origin")
+    if oerr or not origin_data:
+        return None, oerr or "origin_geocode_failed:unknown"
 
-    dest_loc, derr = geocode_place(destination)
-    if derr or not dest_loc:
-        return None, f"destination_geocode_failed:{derr or 'unknown'}"
+    dest_data, derr = _resolve_location(destination, "destination")
+    if derr or not dest_data:
+        return None, derr or "destination_geocode_failed:unknown"
 
-    lat1 = origin_loc.get("latitude")
-    lon1 = origin_loc.get("longitude")
-    lat2 = dest_loc.get("latitude")
-    lon2 = dest_loc.get("longitude")
-    if not all(isinstance(v, (int, float)) for v in (lat1, lon1, lat2, lon2)):
-        return None, "invalid_geocoding_coordinates"
-
-    start = (float(lat1), float(lon1))
-    end = (float(lat2), float(lon2))
+    start = (origin_data["lat"], origin_data["lon"])
+    end = (dest_data["lat"], dest_data["lon"])
     midpoint_lat, midpoint_lon = _midpoint(start[0], start[1], end[0], end[1])
 
     chosen_profiles = profiles or DEFAULT_PROFILES
-    routes: List[Dict[str, Any]] = []
-    errors: Dict[str, str] = {}
-
-    for profile in chosen_profiles:
-        route, err = _fetch_route(profile, start, end)
-        if route:
-            routes.append(route)
-        else:
-            errors[profile] = err or "route_error"
+    routes, errors = _collect_routes(chosen_profiles, start, end)
 
     if not routes:
         return None, "no_routes"
 
-    best = min(routes, key=lambda r: r.get("raw_duration_s") or float("inf"))
+    best = _select_best_route(routes)
     return {
         "origin": {
-            "label": _build_point_label(origin_loc, origin),
+            "label": _build_point_label(origin_data["loc"], origin),
             "lat": start[0],
             "lon": start[1],
         },
         "destination": {
-            "label": _build_point_label(dest_loc, destination),
+            "label": _build_point_label(dest_data["loc"], destination),
             "lat": end[0],
             "lon": end[1],
         },

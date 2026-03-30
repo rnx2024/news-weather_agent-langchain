@@ -163,6 +163,17 @@ def _pick_daily_value(daily: Dict[str, Any], key: str, idx: int):
     return None
 
 
+def _resolve_daily_index(times: Any, horizon: str, target_date: str) -> int:
+    if isinstance(times, list) and times:
+        try:
+            return times.index(target_date)
+        except ValueError:
+            idx = 0 if horizon in ("now", "today") else 1
+            return max(0, min(idx, len(times) - 1))
+
+    return 0 if horizon in ("now", "today") else 1
+
+
 def _to_local_today(timezone_name: str) -> datetime:
     try:
         tz = ZoneInfo(timezone_name) if timezone_name and timezone_name != "auto" else timezone.utc
@@ -217,16 +228,7 @@ def get_weather_summary(place: str, horizon: str = "today", language: str = "en"
 
     times = daily.get("time") or []
     target_date = resolve_horizon_to_date_str(normalized_horizon, loc.get("timezone") or "auto")
-
-    idx = 0
-    if isinstance(times, list) and times:
-        try:
-            idx = times.index(target_date)
-        except ValueError:
-            idx = 0 if normalized_horizon in ("now", "today") else 1
-            idx = max(0, min(idx, len(times) - 1))
-    else:
-        idx = 0 if normalized_horizon in ("now", "today") else 1
+    idx = _resolve_daily_index(times, normalized_horizon, target_date)
 
     return (
         _build_summary(
@@ -287,15 +289,7 @@ def get_weather_summary_by_coords(
     daily = raw.get("daily") or {}
     target_date = resolve_horizon_to_date_str(normalized_horizon, timezone_name)
     times = daily.get("time") or []
-    idx = 0
-    if isinstance(times, list) and times:
-        try:
-            idx = times.index(target_date)
-        except ValueError:
-            idx = 0 if normalized_horizon in ("now", "today") else 1
-            idx = max(0, min(idx, len(times) - 1))
-    else:
-        idx = 0 if normalized_horizon in ("now", "today") else 1
+    idx = _resolve_daily_index(times, normalized_horizon, target_date)
     place_label = label or "En route"
 
     return _build_summary(

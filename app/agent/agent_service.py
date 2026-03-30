@@ -158,7 +158,7 @@ async def _resolve_answer_mode(
             ]
         )
         payload = json.loads(str(getattr(response, "content", "") or "").strip())
-    except (TypeError, ValueError, json.JSONDecodeError):
+    except (TypeError, ValueError):
         return fallback
 
     mode = str(payload.get("mode") or "").strip()
@@ -221,9 +221,12 @@ def _extract_called_tools(messages: List[BaseMessage]) -> Set[str]:
 
 
 def _extract_tool_outputs(messages: List[BaseMessage]) -> Dict[str, str]:
-    tool_names_by_call_id: Dict[str, str] = {}
-    outputs: Dict[str, str] = {}
+    tool_names_by_call_id = _tool_names_by_call_id(messages)
+    return _tool_outputs_from_messages(messages, tool_names_by_call_id)
 
+
+def _tool_names_by_call_id(messages: List[BaseMessage]) -> Dict[str, str]:
+    tool_names_by_call_id: Dict[str, str] = {}
     for msg in messages:
         if isinstance(msg, AIMessage) and msg.tool_calls:
             for tc in msg.tool_calls:
@@ -231,7 +234,14 @@ def _extract_tool_outputs(messages: List[BaseMessage]) -> Dict[str, str]:
                 name = tc.get("name")
                 if isinstance(call_id, str) and isinstance(name, str):
                     tool_names_by_call_id[call_id] = name
+    return tool_names_by_call_id
 
+
+def _tool_outputs_from_messages(
+    messages: List[BaseMessage],
+    tool_names_by_call_id: Dict[str, str],
+) -> Dict[str, str]:
+    outputs: Dict[str, str] = {}
     for msg in messages:
         if not isinstance(msg, ToolMessage):
             continue
@@ -241,7 +251,6 @@ def _extract_tool_outputs(messages: List[BaseMessage]) -> Dict[str, str]:
         tool_name = tool_names_by_call_id.get(call_id)
         if tool_name:
             outputs[tool_name] = str(msg.content)
-
     return outputs
 
 
@@ -369,6 +378,264 @@ def _build_policy_lines(
     return policy_lines
 
 
+async def _reset_session_for_destination_change(
+    *,
+    session_id: str,
+    place: str,
+    active_destination: Optional[str],
+    recent_turns: List[Dict[str, str]],
+    pending_agent_context: Optional[Dict[str, str]],
+    pending_journey_question: Optional[str],
+) -> tuple[List[Dict[str, str]], Optional[Dict[str, str]], Optional[str]]:
+    if active_destination and active_destination != place:
+        await set_pending_agent_context(session_id, None)
+        await set_pending_journey_question(session_id, None)
+        return [], None, None
+    return recent_turns, pending_agent_context, pending_journey_question
+
+
+def _apply_active_origin(origin: Optional[str], active_origin: Optional[str], question: Optional[str]) -> Optional[str]:
+    if origin:
+        return origin
+    if active_origin and question and (is_journey_planning_question(question) or asks_route_or_transport(question)):
+        return active_origin
+    return origin
+
+
+def _resolve_origin_context(
+    *,
+    question: Optional[str],
+    last_reply: Optional[str],
+    last_user: Optional[str],
+    pending_agent_context: Optional[Dict[str, str]],
+    pending_journey_question: Optional[str],
+    active_origin: Optional[str],
+) -> tuple[Optional[str], Optional[str], bool, Optional[str]]:
+    origin = extract_origin(question, last_reply)
+    origin = _apply_active_origin(origin, active_origin, question)
+    pending_question = (pending_agent_context or {}).get("question")
+    awaiting_origin = (pending_agent_context or {}).get("awaiting") == "origin"
+    effective_question = question
+
+    if awaiting_origin:
+        origin = origin or extract_origin(question, "Where are you traveling from?")
+        if origin:
+            effective_question = pending_question or pending_journey_question or last_user or question
+
+    if origin and "where are you traveling from" in (last_reply or "").lower() and not effective_question:
+        effective_question = pending_journey_question or last_user or question
+
+    return origin, effective_question, awaiting_origin, pending_question
+
+
+def _finalize_origin(
+    *,
+    origin: Optional[str],
+    effective_question: Optional[str],
+    last_reply: Optional[str],
+    active_origin: Optional[str],
+) -> Optional[str]:
+    origin = origin or extract_origin(effective_question, last_reply)
+    return _apply_active_origin(origin, active_origin, effective_question)
+
+
+async def _finalize_result(
+    *,
+    session_id: str,
+    place: str,
+    question: Optional[str],
+    result: Dict[str, Any],
+    debug: bool,
+) -> Dict[str, Any]:
+    await mark_tools_called(
+        session_id,
+        tool_names=[],
+        user_message=question,
+        agent_reply=result["final"],
+    )
+    await set_active_destination(session_id, place)
+    if debug:
+        result["debug"] = []
+    return result
+
+
+async def _maybe_handle_followup_reference(
+    *,
+    session_id: str,
+    place: str,
+    question: Optional[str],
+    last_reply: Optional[str],
+    debug: bool,
+) -> Optional[Dict[str, Any]]:
+    if not needs_followup_reference_clarification(question, last_reply):
+        return None
+
+    clarification = "I need the specific news item or the previous message to answer that follow-up directly."
+    await mark_tools_called(
+        session_id,
+        tool_names=[],
+        user_message=question,
+        agent_reply=clarification,
+    )
+    result: Dict[str, Any] = {
+        "place": place,
+        "final": clarification,
+        "risk_level": None,
+        "travel_advice": [],
+        "sources": [],
+    }
+    if debug:
+        result["debug"] = []
+    return result
+
+
+async def _maybe_handle_followup_modes(
+    *,
+    session_id: str,
+    place: str,
+    question: Optional[str],
+    last_reply: Optional[str],
+    recent_turns: List[Dict[str, str]],
+    answer_mode: AnswerMode,
+    same_destination_followup: bool,
+    debug: bool,
+) -> Optional[Dict[str, Any]]:
+    if answer_mode == "news_followup":
+        result = await _answer_news_followup(
+            _llm,
+            place,
+            question or "",
+            last_reply,
+            conversation_history=recent_turns,
+        )
+        return await _finalize_result(
+            session_id=session_id,
+            place=place,
+            question=question,
+            result=result,
+            debug=debug,
+        )
+
+    if answer_mode == "weather_followup":
+        result = await _answer_weather_followup(
+            _llm,
+            place,
+            question or "",
+            conversation_history=recent_turns,
+        )
+        return await _finalize_result(
+            session_id=session_id,
+            place=place,
+            question=question,
+            result=result,
+            debug=debug,
+        )
+
+    if same_destination_followup and answer_mode not in {
+        "news_followup",
+        "weather_followup",
+        "journey_planning",
+    }:
+        result = await _answer_general_followup(
+            _llm,
+            place,
+            question or "",
+            last_reply,
+            conversation_history=recent_turns,
+        )
+        return await _finalize_result(
+            session_id=session_id,
+            place=place,
+            question=question,
+            result=result,
+            debug=debug,
+        )
+
+    return None
+
+
+async def _maybe_handle_journey_mode(
+    *,
+    session_id: str,
+    place: str,
+    question: Optional[str],
+    effective_question: Optional[str],
+    last_reply: Optional[str],
+    recent_turns: List[Dict[str, str]],
+    pending_question: Optional[str],
+    answer_mode: AnswerMode,
+    origin: Optional[str],
+    route_or_transport: bool,
+    debug: bool,
+) -> Optional[Dict[str, Any]]:
+    if answer_mode == "journey_planning" and needs_origin_clarification(question, last_reply):
+        clarification = (
+            f"I can assess conditions in {place}, but I need your departure location to judge the trip itself. "
+            "Where are you traveling from?"
+        )
+        await set_pending_agent_context(
+            session_id,
+            {
+                "mode": "journey_planning",
+                "awaiting": "origin",
+                "question": question or "",
+                "destination": place,
+            },
+        )
+        await set_pending_journey_question(session_id, question)
+        result: Dict[str, Any] = {
+            "place": place,
+            "final": clarification,
+            "risk_level": None,
+            "travel_advice": [],
+            "sources": [],
+        }
+        return await _finalize_result(
+            session_id=session_id,
+            place=place,
+            question=question,
+            result=result,
+            debug=debug,
+        )
+
+    if answer_mode == "journey_planning" and origin:
+        await set_pending_agent_context(session_id, None)
+        await set_pending_journey_question(session_id, None)
+        result = await _answer_journey_question(
+            _llm,
+            place,
+            effective_question or question or "",
+            origin,
+            route_or_transport=route_or_transport,
+            latest_user_message=question or "",
+            conversation_history=recent_turns,
+            pending_question=pending_question,
+        )
+        return await _finalize_result(
+            session_id=session_id,
+            place=place,
+            question=question,
+            result=result,
+            debug=debug,
+        )
+
+    return None
+
+
+def _apply_followup_tool_includes(
+    answer_mode: AnswerMode,
+    include_weather: bool,
+    include_news: bool,
+) -> tuple[bool, bool]:
+    if answer_mode == "news_followup":
+        return include_weather, True
+    if answer_mode == "weather_followup":
+        return True, include_news
+    if answer_mode == "journey_planning":
+        return True, True
+    return include_weather, include_news
+
+
 # -----------------------------------------------------
 # Public function: run_agent
 # -----------------------------------------------------
@@ -388,17 +655,22 @@ async def run_agent(
     active_origin = await get_active_origin(session_id)
     pending_agent_context = await get_pending_agent_context(session_id)
     pending_journey_question = await get_pending_journey_question(session_id)
-    if active_destination and active_destination != place:
-        recent_turns = []
-        pending_agent_context = None
-        pending_journey_question = None
-        await set_pending_agent_context(session_id, None)
-        await set_pending_journey_question(session_id, None)
-    effective_question = question
-    origin = extract_origin(question, last_reply)
-    if not origin and active_origin and (is_journey_planning_question(question) or asks_route_or_transport(question)):
-        origin = active_origin
-    pending_question = (pending_agent_context or {}).get("question")
+    recent_turns, pending_agent_context, pending_journey_question = await _reset_session_for_destination_change(
+        session_id=session_id,
+        place=place,
+        active_destination=active_destination,
+        recent_turns=recent_turns,
+        pending_agent_context=pending_agent_context,
+        pending_journey_question=pending_journey_question,
+    )
+    origin, effective_question, awaiting_origin, pending_question = _resolve_origin_context(
+        question=question,
+        last_reply=last_reply,
+        last_user=last_user,
+        pending_agent_context=pending_agent_context,
+        pending_journey_question=pending_journey_question,
+        active_origin=active_origin,
+    )
     same_destination_followup = _has_same_destination_followup(
         question=question,
         place=place,
@@ -408,15 +680,6 @@ async def run_agent(
         pending_agent_context=pending_agent_context,
         pending_journey_question=pending_journey_question,
     )
-
-    awaiting_origin = (pending_agent_context or {}).get("awaiting") == "origin"
-    if awaiting_origin:
-        origin = origin or extract_origin(question, "Where are you traveling from?")
-        if origin:
-            effective_question = pending_question or pending_journey_question or last_user or question
-
-    if origin and "where are you traveling from" in (last_reply or "").lower() and not effective_question:
-        effective_question = pending_journey_question or last_user or question
 
     answer_mode = await _resolve_answer_mode(
         question=effective_question,
@@ -428,150 +691,53 @@ async def run_agent(
     if awaiting_origin and origin and (pending_agent_context or {}).get("mode") == "journey_planning":
         answer_mode = "journey_planning"
 
-    origin = origin or extract_origin(effective_question, last_reply)
-    if not origin and active_origin and (is_journey_planning_question(effective_question) or asks_route_or_transport(effective_question)):
-        origin = active_origin
+    origin = _finalize_origin(
+        origin=origin,
+        effective_question=effective_question,
+        last_reply=last_reply,
+        active_origin=active_origin,
+    )
     if origin:
         await set_active_origin(session_id, origin)
     route_or_transport = asks_route_or_transport(effective_question)
 
-    if needs_followup_reference_clarification(question, last_reply):
-        clarification = "I need the specific news item or the previous message to answer that follow-up directly."
-        await mark_tools_called(
-            session_id,
-            tool_names=[],
-            user_message=question,
-            agent_reply=clarification,
-        )
-        result: Dict[str, Any] = {
-            "place": place,
-            "final": clarification,
-            "risk_level": None,
-            "travel_advice": [],
-            "sources": [],
-        }
-        if debug:
-            result["debug"] = []
+    result = await _maybe_handle_followup_reference(
+        session_id=session_id,
+        place=place,
+        question=question,
+        last_reply=last_reply,
+        debug=debug,
+    )
+    if result:
         return result
 
-    if answer_mode == "news_followup":
-        result = await _answer_news_followup(
-            _llm,
-            place,
-            question or "",
-            last_reply,
-            conversation_history=recent_turns,
-        )
-        await mark_tools_called(
-            session_id,
-            tool_names=[],
-            user_message=question,
-            agent_reply=result["final"],
-        )
-        await set_active_destination(session_id, place)
-        if debug:
-            result["debug"] = []
+    result = await _maybe_handle_followup_modes(
+        session_id=session_id,
+        place=place,
+        question=question,
+        last_reply=last_reply,
+        recent_turns=recent_turns,
+        answer_mode=answer_mode,
+        same_destination_followup=same_destination_followup,
+        debug=debug,
+    )
+    if result:
         return result
 
-    if answer_mode == "weather_followup":
-        result = await _answer_weather_followup(
-            _llm,
-            place,
-            question or "",
-            conversation_history=recent_turns,
-        )
-        await mark_tools_called(
-            session_id,
-            tool_names=[],
-            user_message=question,
-            agent_reply=result["final"],
-        )
-        await set_active_destination(session_id, place)
-        if debug:
-            result["debug"] = []
-        return result
-
-    # Hard lock: once a destination is already active in this session,
-    # all same-destination follow-ups must stay inside QA flows.
-    # Do not allow fallback into the broad ReAct travel-brief path.
-    if same_destination_followup and answer_mode not in {
-        "news_followup",
-        "weather_followup",
-        "journey_planning",
-    }:
-        result = await _answer_general_followup(
-            _llm,
-            place,
-            question or "",
-            last_reply,
-            conversation_history=recent_turns,
-        )
-        await mark_tools_called(
-            session_id,
-            tool_names=[],
-            user_message=question,
-            agent_reply=result["final"],
-        )
-        await set_active_destination(session_id, place)
-        if debug:
-            result["debug"] = []
-        return result
-
-    if answer_mode == "journey_planning" and needs_origin_clarification(question, last_reply):
-        clarification = (
-            f"I can assess conditions in {place}, but I need your departure location to judge the trip itself. "
-            "Where are you traveling from?"
-        )
-        await set_pending_agent_context(
-            session_id,
-            {
-                "mode": "journey_planning",
-                "awaiting": "origin",
-                "question": question or "",
-                "destination": place,
-            },
-        )
-        await set_pending_journey_question(session_id, question)
-        await mark_tools_called(
-            session_id,
-            tool_names=[],
-            user_message=question,
-            agent_reply=clarification,
-        )
-        await set_active_destination(session_id, place)
-        result: Dict[str, Any] = {
-            "place": place,
-            "final": clarification,
-            "risk_level": None,
-            "travel_advice": [],
-            "sources": [],
-        }
-        if debug:
-            result["debug"] = []
-        return result
-
-    if answer_mode == "journey_planning" and origin:
-        await set_pending_agent_context(session_id, None)
-        await set_pending_journey_question(session_id, None)
-        result = await _answer_journey_question(
-            _llm,
-            place,
-            effective_question or question or "",
-            origin,
-            route_or_transport=route_or_transport,
-            latest_user_message=question or "",
-            conversation_history=recent_turns,
-            pending_question=pending_question,
-        )
-        await mark_tools_called(
-            session_id,
-            tool_names=[],
-            user_message=question,
-            agent_reply=result["final"],
-        )
-        await set_active_destination(session_id, place)
-        if debug:
-            result["debug"] = []
+    result = await _maybe_handle_journey_mode(
+        session_id=session_id,
+        place=place,
+        question=question,
+        effective_question=effective_question,
+        last_reply=last_reply,
+        recent_turns=recent_turns,
+        pending_question=pending_question,
+        answer_mode=answer_mode,
+        origin=origin,
+        route_or_transport=route_or_transport,
+        debug=debug,
+    )
+    if result:
         return result
 
     user_prompt = _build_user_prompt(place, effective_question, origin)
@@ -583,14 +749,11 @@ async def run_agent(
     force_weather, force_news = detect_force_signals(effective_question or "")
     allow_weather, allow_news = await should_include(session_id, force_weather, force_news)
 
-    # Follow-up questions should still be allowed to inspect current evidence.
-    if answer_mode == "news_followup":
-        include_news = True
-    elif answer_mode == "weather_followup":
-        include_weather = True
-    elif answer_mode == "journey_planning":
-        include_weather = True
-        include_news = True
+    include_weather, include_news = _apply_followup_tool_includes(
+        answer_mode,
+        include_weather,
+        include_news,
+    )
 
     if include_weather and not allow_weather and answer_mode == "travel_brief":
         include_weather = False

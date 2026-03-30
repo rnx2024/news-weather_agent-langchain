@@ -15,52 +15,65 @@ def score_weather_risk(summary: Any) -> tuple[int, List[str]]:
     score = 0
     reasons: List[str] = []
 
-    weather_category = classify_weather_code(current.get("weather_code"))
-    if weather_category == "thunderstorm":
-        score += 3
-        reasons.append("thunderstorms are expected")
-    elif weather_category == "heavy_rain":
-        score += 2
-        reasons.append("heavy rain is likely")
-    elif weather_category == "rain":
-        score += 1
-        reasons.append("scattered rain is possible")
-    elif weather_category == "snow":
-        score += 2
-        reasons.append("snow or icy conditions may affect movement")
-    elif weather_category == "fog":
-        score += 1
-        reasons.append("reduced visibility is possible")
-
-    wind_max = day.get("wind_speed_max_kmh") or 0
-    if wind_max >= 70:
-        score += 3
-        reasons.append("very strong winds may disrupt transport")
-    elif wind_max >= 50:
-        score += 2
-        reasons.append("strong winds may affect outdoor plans")
-    elif wind_max >= 30:
-        score += 1
-        reasons.append("gusty conditions are expected")
-
-    precip = day.get("precip_mm") or 0
-    if precip >= 30:
-        score += 2
-        reasons.append("heavy rainfall could slow local travel")
-    elif precip >= 5:
-        score += 1
-        reasons.append("rain may affect outdoor timing")
-
-    tmax = day.get("tmax_c")
-    tmin = day.get("tmin_c")
-    if tmax is not None and tmax >= 35:
-        score += 2
-        reasons.append("very hot conditions are expected")
-    if tmin is not None and tmin <= -5:
-        score += 2
-        reasons.append("very cold conditions are expected")
+    score, reasons = _apply_risk_signal(score, reasons, _score_weather_category(current.get("weather_code")))
+    score, reasons = _apply_risk_signal(score, reasons, _score_wind(day.get("wind_speed_max_kmh")))
+    score, reasons = _apply_risk_signal(score, reasons, _score_precip(day.get("precip_mm")))
+    score, reasons = _apply_risk_signal(score, reasons, _score_temperature(day.get("tmin_c"), day.get("tmax_c")))
 
     return score, reasons
+
+
+def _apply_risk_signal(score: int, reasons: List[str], signal: tuple[int, List[str]]) -> tuple[int, List[str]]:
+    delta, notes = signal
+    if delta:
+        score += delta
+    if notes:
+        reasons.extend(notes)
+    return score, reasons
+
+
+def _score_weather_category(code: Any) -> tuple[int, List[str]]:
+    category = classify_weather_code(code)
+    mapping = {
+        "thunderstorm": (3, ["thunderstorms are expected"]),
+        "heavy_rain": (2, ["heavy rain is likely"]),
+        "rain": (1, ["scattered rain is possible"]),
+        "snow": (2, ["snow or icy conditions may affect movement"]),
+        "fog": (1, ["reduced visibility is possible"]),
+    }
+    return mapping.get(category, (0, []))
+
+
+def _score_wind(wind_max: Any) -> tuple[int, List[str]]:
+    wind = wind_max or 0
+    if wind >= 70:
+        return 3, ["very strong winds may disrupt transport"]
+    if wind >= 50:
+        return 2, ["strong winds may affect outdoor plans"]
+    if wind >= 30:
+        return 1, ["gusty conditions are expected"]
+    return 0, []
+
+
+def _score_precip(precip: Any) -> tuple[int, List[str]]:
+    precip_mm = precip or 0
+    if precip_mm >= 30:
+        return 2, ["heavy rainfall could slow local travel"]
+    if precip_mm >= 5:
+        return 1, ["rain may affect outdoor timing"]
+    return 0, []
+
+
+def _score_temperature(tmin: Any, tmax: Any) -> tuple[int, List[str]]:
+    notes: List[str] = []
+    score = 0
+    if tmax is not None and tmax >= 35:
+        score += 2
+        notes.append("very hot conditions are expected")
+    if tmin is not None and tmin <= -5:
+        score += 2
+        notes.append("very cold conditions are expected")
+    return score, notes
 
 
 def classify_risk_level(score: int, *, uppercase: bool = False) -> str:

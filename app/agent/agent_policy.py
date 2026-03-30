@@ -308,14 +308,13 @@ def classify_answer_mode(question: Optional[str], last_reply: Optional[str] = No
     has_weather = _has_any_term(q, _WEATHER_TERMS)
     has_news = _has_any_term(q, _NEWS_TERMS)
 
-    # Support short follow-ups like "is that in Vigan?" by inheriting the prior topic.
-    if not has_weather and not has_news and any(token in q for token in ("that", "this", "it", "there")):
-        if _has_any_term(last, _NEWS_TERMS):
-            has_news = True
-        elif _has_any_term(last, _WEATHER_TERMS):
-            has_weather = True
-        elif _has_any_term(last, _ORIGIN_QUESTION_TERMS):
-            return "journey_planning"
+    inferred = _infer_followup_topic(q, last)
+    if inferred == "journey":
+        return "journey_planning"
+    if inferred == "news":
+        has_news = True
+    elif inferred == "weather":
+        has_weather = True
 
     if not has_weather and not has_news:
         if _looks_like_news_followup(q, last):
@@ -330,6 +329,18 @@ def classify_answer_mode(question: Optional[str], last_reply: Optional[str] = No
     if is_trip_planning_question(question) or _has_any_term(q, _TRAVEL_BRIEF_TERMS):
         return "travel_brief"
     return "travel_brief"
+
+
+def _infer_followup_topic(question: str, last_reply: str) -> str:
+    if not question or not any(token in question for token in _CONTEXT_REFERENCE_TERMS):
+        return ""
+    if _has_any_term(last_reply, _NEWS_TERMS):
+        return "news"
+    if _has_any_term(last_reply, _WEATHER_TERMS):
+        return "weather"
+    if _has_any_term(last_reply, _ORIGIN_QUESTION_TERMS):
+        return "journey"
+    return ""
 
 
 def needs_followup_reference_clarification(question: Optional[str], last_reply: Optional[str] = None) -> bool:
@@ -384,7 +395,6 @@ def asks_route_or_transport(question: Optional[str]) -> bool:
 def needs_origin_clarification(question: Optional[str], last_reply: Optional[str] = None) -> bool:
     if not question:
         return False
-    q = question.lower()
     last = (last_reply or "").lower()
     if not is_journey_planning_question(question) and not _has_any_term(last, _ORIGIN_QUESTION_TERMS):
         return False

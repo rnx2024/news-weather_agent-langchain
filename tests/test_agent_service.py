@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -778,6 +779,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         async def inspect_plan(_llm, *, place, question, evidence):
+            await asyncio.sleep(0)
             self.assertEqual(place, "Batanes")
             self.assertEqual(question, "Do you have a list of resorts with aircon?")
             place_evidence = evidence["place_evidence"]

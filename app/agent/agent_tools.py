@@ -79,6 +79,80 @@ def _format_news_items(headlines: list[dict[str, Any]], *, empty_message: str) -
     )
 
 
+def _weather_line_or_raise(place: str) -> str:
+    line, err = get_weather_line(place)
+    if err:
+        raise RuntimeError(err)
+    return line or "No weather data."
+
+
+def _load_weather_summary(place: str, horizon: str) -> dict[str, Any]:
+    summary, err = get_weather_summary(place, horizon)
+    if err or not summary:
+        raise RuntimeError(err or "No forecast data.")
+    return summary
+
+
+def _format_weather_summary(summary: dict[str, Any], horizon: str, place: str) -> str:
+    cur = summary.get("current") or {}
+    day = summary.get("day") or {}
+    place_label = summary.get("place_label") or place
+    label = day.get("label") or horizon
+    wx = cur.get("weather_text") or "n/a"
+    parts = [f"{place_label} ({label}): {wx}"]
+    tmin = day.get("tmin_c")
+    tmax = day.get("tmax_c")
+    if tmin is not None and tmax is not None:
+        parts.append(f"{tmin}–{tmax}°C")
+    precip = day.get("precip_mm")
+    if precip is not None:
+        parts.append(f"precip ~{precip} mm")
+    wind = day.get("wind_speed_max_kmh")
+    if wind is not None:
+        parts.append(f"wind max ~{wind} km/h")
+    return ", ".join(parts)
+
+
+def _load_cached_weather_summary(place: str, horizon: str) -> Any:
+    w_key = f"cache:tool:weather_summary:{normalize_text(place)}:{normalize_text(horizon)}"
+    cached = cache_get_json(w_key)
+    if cached is not None:
+        return cached
+
+    summary, werr = get_weather_summary(place, horizon)
+    if werr and not summary:
+        raise RuntimeError(werr)
+    cache_set_json(w_key, summary, ttl=CACHE_TTL_SECONDS)
+    return summary
+
+
+def _load_cached_news_items(place: str) -> list[dict[str, Any]]:
+    n_key = f"cache:tool:news_items:{normalize_text(place)}"
+    cached = cache_get_json(n_key)
+    if cached is not None:
+        return cached
+
+    headlines, _ = get_news_items(place)
+    cache_set_json(n_key, headlines or [], ttl=CACHE_TTL_SECONDS)
+    return headlines or []
+
+
+def _extract_risk_reasons(brief: dict[str, Any]) -> list[str]:
+    reasons = list(dict.fromkeys((brief.get("weather_reasons") or []) + (brief.get("news_reasons") or [])))
+    if not reasons:
+        reasons = list(brief.get("travel_advice") or [])
+    return reasons
+
+
+def _build_risk_message(level: str, reasons: list[str], activity: Optional[str]) -> str:
+    msg = f"Risk level: {level}. "
+    if reasons:
+        msg += "Key factors: " + "; ".join(dict.fromkeys(reasons)) + "."
+    if activity:
+        msg += f" Activity: {activity}."
+    return msg
+
+
 # -----------------------------
 # Tools
 # -----------------------------
@@ -118,33 +192,10 @@ def weather_tool(place: str, horizon: Optional[str] = "today") -> str:
 
     def call():
         if hz in ("today", "now"):
-            line, err = get_weather_line(place)
-            if err:
-                raise RuntimeError(err)
-            return line or "No weather data."
+            return _weather_line_or_raise(place)
 
-        summary, err = get_weather_summary(place, hz)
-        if err or not summary:
-            raise RuntimeError(err or "No forecast data.")
-
-        cur = summary.get("current") or {}
-        day = summary.get("day") or {}
-        place_label = summary.get("place_label") or place
-        label = day.get("label") or hz
-        wx = cur.get("weather_text") or "n/a"
-        tmin = day.get("tmin_c")
-        tmax = day.get("tmax_c")
-        precip = day.get("precip_mm")
-        wind = day.get("wind_speed_max_kmh")
-
-        parts = [f"{place_label} ({label}): {wx}"]
-        if tmin is not None and tmax is not None:
-            parts.append(f"{tmin}–{tmax}°C")
-        if precip is not None:
-            parts.append(f"precip ~{precip} mm")
-        if wind is not None:
-            parts.append(f"wind max ~{wind} km/h")
-        return ", ".join(parts)
+        summary = _load_weather_summary(place, hz)
+        return _format_weather_summary(summary, hz, place)
 
     out = retry(call)
     if isinstance(out, str) and not is_error_result(out):
@@ -214,52 +265,19 @@ def city_risk_tool(
     Assess city risk level (LOW, MEDIUM, HIGH) for outdoor activity and also consider travel conditions
     based on forecasted weather and recent local news.
     """
-    w_key = f"cache:tool:weather_summary:{normalize_text(place)}:{normalize_text(horizon)}"
-    n_key = f"cache:tool:news_items:{normalize_text(place)}"
-
-    def _get_or_fetch_weather() -> Any:
-        cached = cache_get_json(w_key)
-        if cached is not None:
-            return cached
-
-        summary, werr = get_weather_summary(place, horizon)
-        if werr and not summary:
-            raise RuntimeError(werr)
-        cache_set_json(w_key, summary, ttl=CACHE_TTL_SECONDS)
-        return summary
-
-    def _get_or_fetch_news() -> Any:
-        cached = cache_get_json(n_key)
-        if cached is not None:
-            return cached
-
-        headlines, _nerr = get_news_items(place)
-        cache_set_json(n_key, headlines or [], ttl=CACHE_TTL_SECONDS)
-        return headlines or []
-
-    def _build_message(level: str, reasons: list[str]) -> str:
-        msg = f"Risk level: {level}. "
-        if reasons:
-            msg += "Key factors: " + "; ".join(dict.fromkeys(reasons)) + "."
-        if activity:
-            msg += f" Activity: {activity}."
-        return msg
-
     def call() -> str:
         weather_rate.acquire()
         news_rate.acquire()
 
-        _get_or_fetch_weather()
-        _get_or_fetch_news()
+        _load_cached_weather_summary(place, horizon)
+        _load_cached_news_items(place)
         brief, err = build_travel_brief(place)
         if err and not brief["sources"]:
             raise RuntimeError(err)
 
         level = str(brief.get("risk_level") or "low").upper()
-        reasons = list(dict.fromkeys((brief.get("weather_reasons") or []) + (brief.get("news_reasons") or [])))
-        if not reasons:
-            reasons = list(brief.get("travel_advice") or [])
-        return _build_message(level, reasons)
+        reasons = _extract_risk_reasons(brief)
+        return _build_risk_message(level, reasons, activity)
 
     return retry(call)
 

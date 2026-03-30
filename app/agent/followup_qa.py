@@ -17,7 +17,7 @@ from app.routing.ors_service import plan_route
 
 
 def _extract_text_tokens(text: str) -> set[str]:
-    return {token for token in re.findall(r"[a-z0-9]{4,}", (text or "").lower())}
+    return set(re.findall(r"[a-z0-9]{4,}", (text or "").lower()))
 
 
 def _match_news_item(question: str, last_reply: Optional[str], items: List[Dict[str, Any]]) -> Dict[str, Any] | None:
@@ -250,34 +250,43 @@ def _build_news_targeted_query(place: str, question: str, item: Dict[str, Any] |
 
 def _extract_best_news_link(evidence: Dict[str, Any]) -> str | None:
     for key in ("matched_targeted_item", "matched_current_item"):
-        item = evidence.get(key)
-        if isinstance(item, dict):
-            link = str(item.get("link") or "").strip()
-            if link:
-                return link
+        link = _extract_link(evidence.get(key))
+        if link:
+            return link
 
-    targeted_news_items = evidence.get("targeted_news_items")
-    if isinstance(targeted_news_items, list):
-        for item in targeted_news_items:
-            if isinstance(item, dict):
-                link = str(item.get("link") or "").strip()
-                if link:
-                    return link
+    link = _extract_link_from_items(evidence.get("targeted_news_items"))
+    if link:
+        return link
 
     for key in ("destination_evidence", "origin_evidence"):
-        block = evidence.get(key)
-        if not isinstance(block, dict):
-            continue
-        news_items = block.get("news_items")
-        if not isinstance(news_items, list):
-            continue
-        for item in news_items:
-            if isinstance(item, dict):
-                link = str(item.get("link") or "").strip()
-                if link:
-                    return link
+        link = _extract_link_from_block(evidence.get(key))
+        if link:
+            return link
 
     return None
+
+
+def _extract_link(item: Any) -> str | None:
+    if not isinstance(item, dict):
+        return None
+    link = str(item.get("link") or "").strip()
+    return link or None
+
+
+def _extract_link_from_items(items: Any) -> str | None:
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        link = _extract_link(item)
+        if link:
+            return link
+    return None
+
+
+def _extract_link_from_block(block: Any) -> str | None:
+    if not isinstance(block, dict):
+        return None
+    return _extract_link_from_items(block.get("news_items"))
 
 
 def _answer_mentions_article_or_source(text: str) -> bool:
@@ -557,11 +566,11 @@ async def answer_weather_followup(
     conversation_history: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     horizon = _detect_weather_horizon(question)
-    summary, err = get_weather_summary(place, horizon)
+    summary, _ = get_weather_summary(place, horizon)
     sources = [{"type": "weather"}]
 
     if not summary:
-        line, line_err = get_weather_line(place)
+        line, _ = get_weather_line(place)
         if line:
             evidence = {
                 "mode": "weather_followup",
