@@ -12,7 +12,8 @@ from app.agent.agent_prompts import (
 )
 from app.news.news_service import get_news_items, search_news
 from app.travel_brief import build_travel_brief
-from app.weather.weather_service import get_weather_line, get_weather_summary
+from app.weather.weather_service import get_weather_line, get_weather_summary, get_weather_summary_by_coords
+from app.routing.ors_service import plan_route
 
 
 def _extract_text_tokens(text: str) -> set[str]:
@@ -52,14 +53,24 @@ def _news_text(item: Dict[str, Any] | None) -> str:
     ).strip()
 
 
-def _gather_place_evidence(place: str) -> Dict[str, Any]:
+def _gather_place_evidence(place: str, horizon: str | None = None) -> Dict[str, Any]:
     brief, err = build_travel_brief(place)
+    weather_summary = brief.get("weather_summary")
+    weather_reasons = brief.get("weather_reasons") or []
+    weather_horizon = (horizon or "today").strip().lower()
+
+    if weather_horizon not in ("today", "now"):
+        summary, werr = get_weather_summary(place, weather_horizon)
+        if summary and not werr:
+            weather_summary = summary
+            weather_reasons = []
     return {
         "place": place,
-        "weather_summary": brief.get("weather_summary"),
-        "weather_reasons": brief.get("weather_reasons") or [],
+        "weather_summary": weather_summary,
+        "weather_reasons": weather_reasons,
         "news_items": brief.get("news_items") or [],
         "news_reasons": brief.get("news_reasons") or [],
+        "weather_horizon": weather_horizon,
         "source_error": err or None,
     }
 
@@ -292,7 +303,9 @@ def _append_followup_link_if_needed(final: str, evidence: Dict[str, Any], origin
 
 
 def _build_journey_targeted_query(origin: str, destination: str, question: str, pending_question: Optional[str]) -> str:
-    return _normalize_search_query(pending_question or question, origin, destination)
+    base = pending_question or question
+    hazard_terms = "road closure traffic landslide flood ferry"
+    return _normalize_search_query(base, origin, destination, hazard_terms)
 
 
 def _detect_weather_horizon(question: str) -> str:
@@ -316,8 +329,40 @@ async def answer_journey_question(
     conversation_history: Optional[List[Dict[str, str]]] = None,
     pending_question: Optional[str] = None,
 ) -> Dict[str, Any]:
-    destination_evidence = _gather_place_evidence(place)
-    origin_evidence = _gather_place_evidence(origin)
+    horizon = _detect_weather_horizon(pending_question or latest_user_message or question)
+    destination_evidence = _gather_place_evidence(place, horizon)
+    origin_evidence = _gather_place_evidence(origin, horizon)
+
+    route_plan, route_err = plan_route(origin, place)
+    route_summary = None
+    midpoint_weather = None
+    if route_plan:
+        routes = route_plan.get("routes") or []
+        route_summary = {
+            "best_mode": route_plan.get("best_mode"),
+            "best_profile": route_plan.get("best_profile"),
+            "best_distance_km": route_plan.get("best_distance_km"),
+            "best_duration_min": route_plan.get("best_duration_min"),
+            "modes": [
+                {
+                    "mode": r.get("mode"),
+                    "distance_km": r.get("distance_km"),
+                    "duration_min": r.get("duration_min"),
+                }
+                for r in routes
+                if isinstance(r, dict)
+            ],
+        }
+        midpoint = route_plan.get("midpoint") or {}
+        lat = midpoint.get("lat")
+        lon = midpoint.get("lon")
+        if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+            midpoint_weather, _mwerr = get_weather_summary_by_coords(
+                float(lat),
+                float(lon),
+                horizon,
+                label="En route midpoint",
+            )
 
     current_evidence = {
         "mode": "journey_planning",
@@ -330,11 +375,16 @@ async def answer_journey_question(
         "route_or_transport": route_or_transport,
         "destination_evidence": destination_evidence,
         "origin_evidence": origin_evidence,
+        "route_plan": route_plan,
+        "route_summary": route_summary,
+        "route_midpoint_weather": midpoint_weather,
+        "route_plan_error": route_err or None,
         "targeted_search_query": None,
         "targeted_search_error": None,
         "targeted_news_items": [],
         "limitations": [
-            "No dedicated routing engine or live transport schedule data is available in this workflow."
+            "Routing data is based on OpenRouteService profiles and may not include live traffic or schedules.",
+            "Public transit, flights, and ferry schedules are not available in this workflow.",
         ],
     }
     plan = await _plan_journey_action(llm, place=place, question=question, evidence=current_evidence)

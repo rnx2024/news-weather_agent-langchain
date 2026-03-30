@@ -21,12 +21,14 @@ from app.agent.followup_qa import (
 # session memory (Redis-backed)
 from app.session.session_cache import (
     get_active_destination,
+    get_active_origin,
     get_last_exchange,
     get_pending_agent_context,
     get_recent_turns,
     get_pending_journey_question,
     mark_tools_called,
     set_active_destination,
+    set_active_origin,
     set_pending_agent_context,
     set_pending_journey_question,
     should_include,
@@ -38,6 +40,7 @@ from app.agent.agent_policy import (
     decide_tool_includes,
     detect_force_signals,
     extract_origin,
+    is_journey_planning_question,
     needs_followup_reference_clarification,
     needs_origin_clarification,
 )
@@ -382,6 +385,7 @@ async def run_agent(
     last_user, last_reply = await get_last_exchange(session_id)
     recent_turns = await get_recent_turns(session_id)
     active_destination = await get_active_destination(session_id)
+    active_origin = await get_active_origin(session_id)
     pending_agent_context = await get_pending_agent_context(session_id)
     pending_journey_question = await get_pending_journey_question(session_id)
     if active_destination and active_destination != place:
@@ -392,6 +396,8 @@ async def run_agent(
         await set_pending_journey_question(session_id, None)
     effective_question = question
     origin = extract_origin(question, last_reply)
+    if not origin and active_origin and (is_journey_planning_question(question) or asks_route_or_transport(question)):
+        origin = active_origin
     pending_question = (pending_agent_context or {}).get("question")
     same_destination_followup = _has_same_destination_followup(
         question=question,
@@ -423,6 +429,10 @@ async def run_agent(
         answer_mode = "journey_planning"
 
     origin = origin or extract_origin(effective_question, last_reply)
+    if not origin and active_origin and (is_journey_planning_question(effective_question) or asks_route_or_transport(effective_question)):
+        origin = active_origin
+    if origin:
+        await set_active_origin(session_id, origin)
     route_or_transport = asks_route_or_transport(effective_question)
 
     if needs_followup_reference_clarification(question, last_reply):

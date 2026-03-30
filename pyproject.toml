@@ -23,3 +23,8 @@ dependencies = [
   "redis>=5",
   "itsdangerous"
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

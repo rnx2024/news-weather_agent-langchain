@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from app.session.session_store import (
     get_active_destination,
+    get_active_origin,
     get_last_exchange,
     get_pending_agent_context,
     get_recent_turns,
@@ -14,6 +15,7 @@ from app.session.session_store import (
     mark_tools_called,
     prepare_weather_news,
     set_active_destination,
+    set_active_origin,
     set_pending_agent_context,
     set_pending_journey_question,
     should_include,
@@ -26,6 +28,7 @@ __all__ = [
     "mark_sent",
     "mark_tools_called",
     "get_active_destination",
+    "get_active_origin",
     "get_last_exchange",
     "get_pending_agent_context",
     "get_recent_turns",
@@ -34,6 +37,7 @@ __all__ = [
     "get_or_set",
     "prepare_weather_news",
     "set_active_destination",
+    "set_active_origin",
     "set_pending_agent_context",
     "set_pending_journey_question",
 ]

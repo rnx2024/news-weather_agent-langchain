@@ -76,6 +76,7 @@ Core pieces:
 - FastAPI for the API surface
 - LangGraph for the `/chat` assistant
 - Open-Meteo and OpenWeather for weather data
+- OpenRouteService for routing (set `ORS_API` to enable journey planning routes)
 - SerpAPI Google News for recent local reporting
 - Redis-backed session and cache helpers
 - rate limiting and retry helpers around outbound provider calls

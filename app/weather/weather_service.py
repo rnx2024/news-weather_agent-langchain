@@ -4,6 +4,7 @@ from __future__ import annotations
 from app.weather.openmeteo_provider import (
     classify_weather_code,
     get_weather_summary,
+    get_weather_summary_by_coords,
     weather_code_to_text,
 )
 from app.weather.openweather_provider import get_weather_line, get_weather_raw
@@ -19,6 +20,7 @@ __all__ = [
     "get_weather_raw",
     "get_weather_line",
     "get_weather_summary",
+    "get_weather_summary_by_coords",
     "classify_weather_code",
     "weather_code_to_text",
 ]

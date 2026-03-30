@@ -228,8 +228,28 @@ def get_weather_summary(place: str, horizon: str = "today", language: str = "en"
     else:
         idx = 0 if normalized_horizon in ("now", "today") else 1
 
+    return (
+        _build_summary(
+            current=current,
+            daily=daily,
+            target_date=target_date,
+            label=f"{loc['name']}, {loc['country']}",
+            idx=idx,
+        ),
+        None,
+    )
+
+
+def _build_summary(
+    *,
+    current: Dict[str, Any],
+    daily: Dict[str, Any],
+    target_date: str,
+    label: str,
+    idx: int,
+) -> Dict[str, Any]:
     return {
-        "place_label": f"{loc['name']}, {loc['country']}",
+        "place_label": label,
         "current": {
             "temp_c": current.get("temperature_2m"),
             "feels_like_c": current.get("apparent_temperature"),
@@ -247,4 +267,41 @@ def get_weather_summary(place: str, horizon: str = "today", language: str = "en"
             "uv_index_max": _pick_daily_value(daily, "uv_index_max", idx),
             "wind_speed_max_kmh": _pick_daily_value(daily, "wind_speed_10m_max", idx),
         },
-    }, None
+    }
+
+
+def get_weather_summary_by_coords(
+    lat: float,
+    lon: float,
+    horizon: str = "today",
+    *,
+    label: str | None = None,
+    timezone_name: str = "auto",
+):
+    normalized_horizon = (horizon or "").strip().lower()
+    raw, werr = fetch_openmeteo_forecast(lat=float(lat), lon=float(lon), timezone_name=timezone_name)
+    if werr or not raw:
+        return None, werr
+
+    current = raw.get("current") or {}
+    daily = raw.get("daily") or {}
+    target_date = resolve_horizon_to_date_str(normalized_horizon, timezone_name)
+    times = daily.get("time") or []
+    idx = 0
+    if isinstance(times, list) and times:
+        try:
+            idx = times.index(target_date)
+        except ValueError:
+            idx = 0 if normalized_horizon in ("now", "today") else 1
+            idx = max(0, min(idx, len(times) - 1))
+    else:
+        idx = 0 if normalized_horizon in ("now", "today") else 1
+    place_label = label or "En route"
+
+    return _build_summary(
+        current=current,
+        daily=daily,
+        target_date=target_date,
+        label=place_label,
+        idx=idx,
+    ), None

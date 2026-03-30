@@ -9,6 +9,7 @@ from langchain_core.tools import tool
 from app.weather.weather_service import get_weather_line, get_weather_summary
 from app.news.news_service import get_news_items, search_news
 from app.travel_brief import build_travel_brief
+from app.routing.ors_service import plan_route
 
 from app.tooling.sync_cache import (
     CACHE_TTL_SECONDS_DEFAULT,
@@ -58,6 +59,12 @@ class RiskInput(BaseModel):
 
 class TravelBriefInput(BaseModel):
     place: str
+
+
+class RoutePlanInput(BaseModel):
+    origin: str
+    destination: str
+    profiles: Optional[list[str]] = None
 
 
 # -----------------------------
@@ -259,3 +266,26 @@ def city_risk_tool(
         return _build_message(level, reasons)
 
     return retry(call)
+
+
+@tool(args_schema=RoutePlanInput)
+def route_planner_tool(origin: str, destination: str, profiles: Optional[list[str]] = None) -> str:
+    """Plan a route between two locations using OpenRouteService and return distance/duration by mode."""
+    origin_norm = normalize_text(origin) or "unknown"
+    dest_norm = normalize_text(destination) or "unknown"
+    prof_key = ",".join(profiles or [])
+    cache_key = f"cache:tool:route_plan:{origin_norm}:{dest_norm}:{normalize_text(prof_key) or 'default'}"
+    cached = cache_get_str(cache_key)
+    if cached is not None:
+        return cached
+
+    def call() -> str:
+        plan, err = plan_route(origin, destination, tuple(profiles) if profiles else None)
+        if err or not plan:
+            raise RuntimeError(err or "route_planning_failed")
+        return json.dumps(plan)
+
+    out = retry(call)
+    if isinstance(out, str) and not is_error_result(out):
+        cache_set_str(cache_key, out, ttl=CACHE_TTL_SECONDS)
+    return out
