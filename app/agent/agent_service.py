@@ -41,6 +41,7 @@ from app.agent.agent_policy import (
     detect_force_signals,
     extract_origin,
     is_journey_planning_question,
+    is_origin_only_reply,
     needs_followup_reference_clarification,
     needs_origin_clarification,
 )
@@ -424,6 +425,15 @@ def _resolve_origin_context(
 
     if origin and "where are you traveling from" in (last_reply or "").lower() and not effective_question:
         effective_question = pending_journey_question or last_user or question
+
+    if (
+        origin
+        and effective_question == question
+        and is_origin_only_reply(question)
+        and last_user
+        and (is_journey_planning_question(last_user) or asks_route_or_transport(last_user))
+    ):
+        effective_question = last_user
 
     return origin, effective_question, awaiting_origin, pending_question
 

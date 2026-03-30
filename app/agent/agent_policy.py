@@ -455,6 +455,28 @@ def extract_origin(question: Optional[str], last_reply: Optional[str] = None) ->
     return None
 
 
+def is_origin_only_reply(question: Optional[str]) -> bool:
+    if not question:
+        return False
+
+    origin = extract_origin(question)
+    if not origin:
+        return False
+
+    q_lc = question.lower()
+    if _has_any_term(q_lc, _WEATHER_TERMS) or _has_any_term(q_lc, _NEWS_TERMS):
+        return False
+    if _has_any_term(q_lc, _TRAVEL_BRIEF_TERMS):
+        return False
+    if is_trip_planning_question(question) or is_journey_planning_question(question):
+        return False
+    if asks_route_or_transport(question):
+        return False
+
+    compact = " ".join(question.strip().split())
+    return _looks_like_location_reply(compact) or len(compact.split()) <= 6
+
+
 def _clean_location_fragment(fragment: str) -> str | None:
     cleaned = re.split(r"[?.!,;]| by | via | using ", fragment, maxsplit=1, flags=re.IGNORECASE)[0].strip()
     cleaned = re.sub(r"^(the)\s+", "", cleaned, flags=re.IGNORECASE).strip()
