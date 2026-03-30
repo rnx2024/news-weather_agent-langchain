@@ -140,6 +140,8 @@ async def _resolve_answer_mode(
     place: str,
 ) -> AnswerMode:
     fallback = classify_answer_mode(question, last_reply)
+    if fallback == "journey_planning":
+        return fallback
     if not question or not recent_turns:
         return fallback
 

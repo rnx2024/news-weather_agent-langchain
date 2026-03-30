@@ -136,6 +136,7 @@ Rules:
 - If the current journey evidence is not enough, set "answered" to false, put "" in "answer", and provide one short targeted search query in "search_query".
 - Use the user's actual wording plus the origin and destination when useful.
 - If route_summary or route_plan contains distances/durations that answer the transport question directly, mark answered=true.
+- Treat route_summary as the primary transport evidence (it is derived from OpenRouteService).
 - Do not request a search if the current evidence already answers the question.
 - Do not treat destination risk summaries or generic travel conditions as an answer to a transport-choice question.
 - Do not include commentary or extra keys.
@@ -157,6 +158,8 @@ Rules:
 - Check the present evidence first and answer from it directly before leaning on broader context.
 - Distinguish clearly between origin conditions, destination conditions, and what is still unknown along the route.
 - If route_summary is available, use it to compare mode durations/distances, and clearly state which mode looks shortest based on that data.
+- Treat route_summary as the primary transport evidence (it is derived from OpenRouteService).
+- For transport-choice questions, do not default to destination travel conditions. Use route_summary first, and mention weather/news only if they materially affect the choice.
 - If route_midpoint_weather is present, you may mention it briefly as an en-route signal.
 - If the user asks about the best route or best transport and no route_summary is available, do not pretend you have routing or live schedule data. You may still offer limited practical guidance from weather and disruption evidence.
 - If the gathered evidence is not enough to answer confidently, say that you can't answer confidently from the data gathered so far.

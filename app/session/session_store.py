@@ -45,39 +45,98 @@ def _mem_get_bucket(session_id: str, *, create: bool = False) -> dict[str, str]:
     return bucket or {}
 
 
-async def _resolve_compute_value(compute_fn: Callable[[], Awaitable[str] | str]) -> str:
-    value = compute_fn()
-    return await value if inspect.isawaitable(value) else value
+async def _fetch_field(session_id: str, field: str, *, log_context: str) -> str | None:
+    if redis is None:
+        return _mem_get_bucket(session_id).get(field)
+    try:
+        return await redis.hget(sess_key(session_id), field)
+    except RedisError as exc:
+        log.warning("Redis read failed in %s [session_id=%s]: %s", log_context, session_id, exc)
+        return None
 
 
-async def get_session_state(session_id: str) -> Dict[str, Any]:
+async def _fetch_session_map(session_id: str, *, log_context: str) -> Dict[str, Any]:
     if redis is None:
         return dict(_mem_get_bucket(session_id))
     try:
         data = await redis.hgetall(sess_key(session_id))
         return data or {}
     except RedisError as exc:
-        log.warning("Redis hgetall failed in get_session_state [session_id=%s]: %s", session_id, exc)
+        log.warning("Redis hgetall failed in %s [session_id=%s]: %s", log_context, session_id, exc)
         return {}
 
 
-async def should_include(session_id: str, force_weather: bool, force_news: bool) -> Tuple[bool, bool]:
+async def _write_field(
+    session_id: str,
+    field: str,
+    value: str | None,
+    *,
+    ttl_seconds: int,
+    log_context: str,
+) -> None:
+    if value is not None:
+        value = str(value)
+
     if redis is None:
-        data = _mem_get_bucket(session_id)
-        now = int(time.time())
-        last_w = to_int((data or {}).get("last_weather_sent_at"), 0)
-        last_n = to_int((data or {}).get("last_news_sent_at"), 0)
-        include_weather = force_weather or (now - last_w >= ONE_HOUR)
-        include_news = force_news or (now - last_n >= ONE_HOUR)
-        return include_weather, include_news
+        bucket = _mem_get_bucket(session_id, create=True)
+        if value:
+            bucket[field] = value
+            _mem_expire(session_id, ttl_seconds)
+        else:
+            bucket.pop(field, None)
+        return
 
-    now = int(time.time())
+    sk = sess_key(session_id)
     try:
-        data = await redis.hgetall(sess_key(session_id))
+        if value:
+            await redis.hset(sk, mapping={field: value})
+            await redis.expire(sk, ttl_seconds)
+        else:
+            await redis.hdel(sk, field)
     except RedisError as exc:
-        log.warning("Redis hgetall failed in should_include [session_id=%s]: %s", session_id, exc)
-        return True, True
+        log.warning("Redis write failed in %s [session_id=%s]: %s", log_context, session_id, exc)
 
+
+def _decode_pending_context(raw: str | None) -> Dict[str, str] | None:
+    if not raw:
+        return None
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        return None
+    return {str(key): str(value) for key, value in data.items() if value is not None}
+
+
+def _decode_recent_turns(raw: str | None) -> list[Dict[str, str]]:
+    if not raw:
+        return []
+    data = json.loads(raw)
+    if not isinstance(data, list):
+        return []
+    turns: list[Dict[str, str]] = []
+    for item in data[-_MAX_RECENT_TURNS:]:
+        if not isinstance(item, dict):
+            continue
+        turns.append(
+            {
+                "user": str(item.get("user") or ""),
+                "assistant": str(item.get("assistant") or ""),
+            }
+        )
+    return turns
+
+
+async def _resolve_compute_value(compute_fn: Callable[[], Awaitable[str] | str]) -> str:
+    value = compute_fn()
+    return await value if inspect.isawaitable(value) else value
+
+
+async def get_session_state(session_id: str) -> Dict[str, Any]:
+    return await _fetch_session_map(session_id, log_context="get_session_state")
+
+
+async def should_include(session_id: str, force_weather: bool, force_news: bool) -> Tuple[bool, bool]:
+    data = await _fetch_session_map(session_id, log_context="should_include")
+    now = int(time.time())
     last_w = to_int((data or {}).get("last_weather_sent_at"), 0)
     last_n = to_int((data or {}).get("last_news_sent_at"), 0)
 
@@ -95,36 +154,6 @@ async def mark_sent(
     agent_reply: str | None = None,
     ttl_seconds: int = DEFAULT_SESSION_TTL,
 ) -> None:
-    if redis is None:
-        bucket = _mem_get_bucket(session_id, create=True)
-        now = int(time.time())
-        mapping: dict[str, str] = {}
-
-        if weather_sent:
-            mapping["last_weather_sent_at"] = str(now)
-        if news_sent:
-            mapping["last_news_sent_at"] = str(now)
-        mapping["last_chat_sent_at"] = str(now)
-
-        if user_message:
-            mapping["last_user_message"] = user_message[:500]
-        if agent_reply:
-            mapping["last_agent_reply"] = agent_reply[:1000]
-
-        if user_message or agent_reply:
-            recent_turns = await get_recent_turns(session_id)
-            recent_turns.append(
-                {
-                    "user": (user_message or "")[:500],
-                    "assistant": (agent_reply or "")[:1000],
-                }
-            )
-            mapping[_RECENT_TURNS_FIELD] = json.dumps(recent_turns[-_MAX_RECENT_TURNS:], ensure_ascii=True)
-
-        bucket.update(mapping)
-        _mem_expire(session_id, ttl_seconds)
-        return
-
     now = int(time.time())
     mapping: dict[str, str] = {}
 
@@ -140,17 +169,24 @@ async def mark_sent(
     if agent_reply:
         mapping["last_agent_reply"] = agent_reply[:1000]
 
+    if user_message or agent_reply:
+        recent_turns = await get_recent_turns(session_id)
+        recent_turns.append(
+            {
+                "user": (user_message or "")[:500],
+                "assistant": (agent_reply or "")[:1000],
+            }
+        )
+        mapping[_RECENT_TURNS_FIELD] = json.dumps(recent_turns[-_MAX_RECENT_TURNS:], ensure_ascii=True)
+
+    if redis is None:
+        bucket = _mem_get_bucket(session_id, create=True)
+        bucket.update(mapping)
+        _mem_expire(session_id, ttl_seconds)
+        return
+
     sk = sess_key(session_id)
     try:
-        recent_turns = await get_recent_turns(session_id)
-        if user_message or agent_reply:
-            recent_turns.append(
-                {
-                    "user": (user_message or "")[:500],
-                    "assistant": (agent_reply or "")[:1000],
-                }
-            )
-            mapping[_RECENT_TURNS_FIELD] = json.dumps(recent_turns[-_MAX_RECENT_TURNS:], ensure_ascii=True)
         await redis.hset(sk, mapping=mapping)
         await redis.expire(sk, ttl_seconds)
     except RedisError as exc:
@@ -164,24 +200,14 @@ async def set_pending_journey_question(
     *,
     ttl_seconds: int = DEFAULT_SESSION_TTL,
 ) -> None:
-    if redis is None:
-        bucket = _mem_get_bucket(session_id, create=True)
-        if question:
-            bucket["pending_journey_question"] = question[:500]
-            _mem_expire(session_id, ttl_seconds)
-        else:
-            bucket.pop("pending_journey_question", None)
-        return
-
-    sk = sess_key(session_id)
-    try:
-        if question:
-            await redis.hset(sk, mapping={"pending_journey_question": question[:500]})
-            await redis.expire(sk, ttl_seconds)
-        else:
-            await redis.hdel(sk, "pending_journey_question")
-    except RedisError as exc:
-        log.warning("Redis write failed in set_pending_journey_question [session_id=%s]: %s", session_id, exc)
+    value = question[:500] if question else None
+    await _write_field(
+        session_id,
+        "pending_journey_question",
+        value,
+        ttl_seconds=ttl_seconds,
+        log_context="set_pending_journey_question",
+    )
 
 
 async def set_pending_agent_context(
@@ -190,24 +216,19 @@ async def set_pending_agent_context(
     *,
     ttl_seconds: int = DEFAULT_SESSION_TTL,
 ) -> None:
-    if redis is None:
-        bucket = _mem_get_bucket(session_id, create=True)
-        if context:
-            bucket[_PENDING_AGENT_CONTEXT_FIELD] = json.dumps(context, ensure_ascii=True)
-            _mem_expire(session_id, ttl_seconds)
-        else:
-            bucket.pop(_PENDING_AGENT_CONTEXT_FIELD, None)
+    try:
+        payload = json.dumps(context, ensure_ascii=True) if context else None
+    except (TypeError, ValueError) as exc:
+        log.warning("Redis write failed in set_pending_agent_context [session_id=%s]: %s", session_id, exc)
         return
 
-    sk = sess_key(session_id)
-    try:
-        if context:
-            await redis.hset(sk, mapping={_PENDING_AGENT_CONTEXT_FIELD: json.dumps(context, ensure_ascii=True)})
-            await redis.expire(sk, ttl_seconds)
-        else:
-            await redis.hdel(sk, _PENDING_AGENT_CONTEXT_FIELD)
-    except (RedisError, TypeError, ValueError) as exc:
-        log.warning("Redis write failed in set_pending_agent_context [session_id=%s]: %s", session_id, exc)
+    await _write_field(
+        session_id,
+        _PENDING_AGENT_CONTEXT_FIELD,
+        payload,
+        ttl_seconds=ttl_seconds,
+        log_context="set_pending_agent_context",
+    )
 
 
 async def set_active_destination(
@@ -216,24 +237,14 @@ async def set_active_destination(
     *,
     ttl_seconds: int = DEFAULT_SESSION_TTL,
 ) -> None:
-    if redis is None:
-        bucket = _mem_get_bucket(session_id, create=True)
-        if place:
-            bucket[_ACTIVE_DESTINATION_FIELD] = place[:200]
-            _mem_expire(session_id, ttl_seconds)
-        else:
-            bucket.pop(_ACTIVE_DESTINATION_FIELD, None)
-        return
-
-    sk = sess_key(session_id)
-    try:
-        if place:
-            await redis.hset(sk, mapping={_ACTIVE_DESTINATION_FIELD: place[:200]})
-            await redis.expire(sk, ttl_seconds)
-        else:
-            await redis.hdel(sk, _ACTIVE_DESTINATION_FIELD)
-    except RedisError as exc:
-        log.warning("Redis write failed in set_active_destination [session_id=%s]: %s", session_id, exc)
+    value = place[:200] if place else None
+    await _write_field(
+        session_id,
+        _ACTIVE_DESTINATION_FIELD,
+        value,
+        ttl_seconds=ttl_seconds,
+        log_context="set_active_destination",
+    )
 
 
 async def set_active_origin(
@@ -242,122 +253,45 @@ async def set_active_origin(
     *,
     ttl_seconds: int = DEFAULT_SESSION_TTL,
 ) -> None:
-    if redis is None:
-        bucket = _mem_get_bucket(session_id, create=True)
-        if origin:
-            bucket[_ACTIVE_ORIGIN_FIELD] = origin[:200]
-            _mem_expire(session_id, ttl_seconds)
-        else:
-            bucket.pop(_ACTIVE_ORIGIN_FIELD, None)
-        return
-
-    sk = sess_key(session_id)
-    try:
-        if origin:
-            await redis.hset(sk, mapping={_ACTIVE_ORIGIN_FIELD: origin[:200]})
-            await redis.expire(sk, ttl_seconds)
-        else:
-            await redis.hdel(sk, _ACTIVE_ORIGIN_FIELD)
-    except RedisError as exc:
-        log.warning("Redis write failed in set_active_origin [session_id=%s]: %s", session_id, exc)
+    value = origin[:200] if origin else None
+    await _write_field(
+        session_id,
+        _ACTIVE_ORIGIN_FIELD,
+        value,
+        ttl_seconds=ttl_seconds,
+        log_context="set_active_origin",
+    )
 
 
 async def get_pending_journey_question(session_id: str) -> str | None:
-    if redis is None:
-        value = _mem_get_bucket(session_id).get("pending_journey_question")
-        return value or None
-    try:
-        value = await redis.hget(sess_key(session_id), "pending_journey_question")
-        return value or None
-    except RedisError as exc:
-        log.warning("Redis read failed in get_pending_journey_question [session_id=%s]: %s", session_id, exc)
-        return None
+    value = await _fetch_field(session_id, "pending_journey_question", log_context="get_pending_journey_question")
+    return value or None
 
 
 async def get_active_destination(session_id: str) -> str | None:
-    if redis is None:
-        value = _mem_get_bucket(session_id).get(_ACTIVE_DESTINATION_FIELD)
-        return str(value).strip() if value else None
-    try:
-        value = await redis.hget(sess_key(session_id), _ACTIVE_DESTINATION_FIELD)
-        return str(value).strip() if value else None
-    except RedisError as exc:
-        log.warning("Redis read failed in get_active_destination [session_id=%s]: %s", session_id, exc)
-        return None
+    value = await _fetch_field(session_id, _ACTIVE_DESTINATION_FIELD, log_context="get_active_destination")
+    return str(value).strip() if value else None
 
 
 async def get_active_origin(session_id: str) -> str | None:
-    if redis is None:
-        value = _mem_get_bucket(session_id).get(_ACTIVE_ORIGIN_FIELD)
-        return str(value).strip() if value else None
-    try:
-        value = await redis.hget(sess_key(session_id), _ACTIVE_ORIGIN_FIELD)
-        return str(value).strip() if value else None
-    except RedisError as exc:
-        log.warning("Redis read failed in get_active_origin [session_id=%s]: %s", session_id, exc)
-        return None
+    value = await _fetch_field(session_id, _ACTIVE_ORIGIN_FIELD, log_context="get_active_origin")
+    return str(value).strip() if value else None
 
 
 async def get_pending_agent_context(session_id: str) -> Dict[str, str] | None:
-    if redis is None:
-        raw = _mem_get_bucket(session_id).get(_PENDING_AGENT_CONTEXT_FIELD)
-        if not raw:
-            return None
-        data = json.loads(raw)
-        if not isinstance(data, dict):
-            return None
-        return {str(key): str(value) for key, value in data.items() if value is not None}
+    raw = await _fetch_field(session_id, _PENDING_AGENT_CONTEXT_FIELD, log_context="get_pending_agent_context")
     try:
-        raw = await redis.hget(sess_key(session_id), _PENDING_AGENT_CONTEXT_FIELD)
-        if not raw:
-            return None
-        data = json.loads(raw)
-        if not isinstance(data, dict):
-            return None
-        return {str(key): str(value) for key, value in data.items() if value is not None}
-    except (RedisError, ValueError, TypeError) as exc:
+        return _decode_pending_context(raw)
+    except (ValueError, TypeError) as exc:
         log.warning("Redis read failed in get_pending_agent_context [session_id=%s]: %s", session_id, exc)
         return None
 
 
 async def get_recent_turns(session_id: str) -> list[Dict[str, str]]:
-    if redis is None:
-        raw = _mem_get_bucket(session_id).get(_RECENT_TURNS_FIELD)
-        if not raw:
-            return []
-        data = json.loads(raw)
-        if not isinstance(data, list):
-            return []
-        turns: list[Dict[str, str]] = []
-        for item in data[-_MAX_RECENT_TURNS:]:
-            if not isinstance(item, dict):
-                continue
-            turns.append(
-                {
-                    "user": str(item.get("user") or ""),
-                    "assistant": str(item.get("assistant") or ""),
-                }
-            )
-        return turns
+    raw = await _fetch_field(session_id, _RECENT_TURNS_FIELD, log_context="get_recent_turns")
     try:
-        raw = await redis.hget(sess_key(session_id), _RECENT_TURNS_FIELD)
-        if not raw:
-            return []
-        data = json.loads(raw)
-        if not isinstance(data, list):
-            return []
-        turns: list[Dict[str, str]] = []
-        for item in data[-_MAX_RECENT_TURNS:]:
-            if not isinstance(item, dict):
-                continue
-            turns.append(
-                {
-                    "user": str(item.get("user") or ""),
-                    "assistant": str(item.get("assistant") or ""),
-                }
-            )
-        return turns
-    except (RedisError, ValueError, TypeError) as exc:
+        return _decode_recent_turns(raw)
+    except (ValueError, TypeError) as exc:
         log.warning("Redis read failed in get_recent_turns [session_id=%s]: %s", session_id, exc)
         return []
 
@@ -382,39 +316,16 @@ async def mark_tools_called(
 
 
 async def get_last_exchange(session_id: str) -> tuple[str | None, str | None]:
-    if redis is None:
-        bucket = _mem_get_bucket(session_id)
-        return bucket.get("last_user_message"), bucket.get("last_agent_reply")
-    try:
-        last_user, last_reply = await redis.hmget(
-            sess_key(session_id),
-            "last_user_message",
-            "last_agent_reply",
-        )
-        return last_user, last_reply
-    except RedisError as exc:
-        log.warning("Redis hmget failed in get_last_exchange [session_id=%s]: %s", session_id, exc)
-        return None, None
+    last_user = await _fetch_field(session_id, "last_user_message", log_context="get_last_exchange")
+    last_reply = await _fetch_field(session_id, "last_agent_reply", log_context="get_last_exchange")
+    return last_user, last_reply
 
 
 async def get_last_sent_timestamps(session_id: str) -> tuple[int, int, int]:
-    if redis is None:
-        bucket = _mem_get_bucket(session_id)
-        w = bucket.get("last_weather_sent_at")
-        n = bucket.get("last_news_sent_at")
-        c = bucket.get("last_chat_sent_at")
-        return to_int(w, 0), to_int(n, 0), to_int(c, 0)
-    try:
-        w, n, c = await redis.hmget(
-            sess_key(session_id),
-            "last_weather_sent_at",
-            "last_news_sent_at",
-            "last_chat_sent_at",
-        )
-        return to_int(w, 0), to_int(n, 0), to_int(c, 0)
-    except RedisError as exc:
-        log.warning("Redis hmget failed in get_last_sent_timestamps [session_id=%s]: %s", session_id, exc)
-        return 0, 0, 0
+    w = await _fetch_field(session_id, "last_weather_sent_at", log_context="get_last_sent_timestamps")
+    n = await _fetch_field(session_id, "last_news_sent_at", log_context="get_last_sent_timestamps")
+    c = await _fetch_field(session_id, "last_chat_sent_at", log_context="get_last_sent_timestamps")
+    return to_int(w, 0), to_int(n, 0), to_int(c, 0)
 
 
 async def get_or_set(
